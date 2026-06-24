@@ -1,0 +1,44 @@
+[27496] [2026-05-23 16:10:17] INFO: ==> Running file: E:\code\辐射源个体识别代码\P3MC-main\pretext.py
+[27496] [2026-05-23 16:10:17] INFO: ==> Config: {'exp_name': 'CVTSLANet_ads-b_iq_powerNorm', 'exp_type': 'Pretext_random_rot', 'random_seed': 2024, 'platform': 'windows', 'device': 'cuda', 'start_epoch': 0, 'epoch': 5, 'threshold': 0, 'save_freq': 1, 'resume': '', 'dataset': {'name': 'ads-b', 'root': 'e:\\code\\辐射源个体识别代码\\P3MC-main\\Datasets\\ADS-B', 'type': 'iq', 'normalize': 'power', 'batch_size': 32, 'ratio': 0.2, 'num_classes': 90}, 'encoder': {'name': 'CVTSLANet', 'root': 'models/CVTSLANetFeature.py', 'feature_dim': 1024, 'TSLA_config': {'seq_len': 4800, 'patch_size': 32, 'num_channels': 2, 'emb_dim': 256, 'depth': 3, 'dropout_rate': 0.3}}, 'rot_classifier': {'root': 'models/LinearClassifier.py', 'in_dim': 1024, 'num_classes': 8}, 'mixed_classifier': {'root': 'models/LinearClassifier.py', 'in_dim': 1024, 'num_classes': 90}, 'optimizer': {'lr': 0.001, 'momentum': 0.9, 'weight_decay': 0.0005, 'step_size': 50, 'gamma': 0.1}, 'mml': {'root': 'models/ManifoldMixupLoss.py', 'beta': 2.0}, 'mtl': {'root': 'models/AutomaticWeightedLoss.py', 'item': ('rot_cls', 'sei_cls', 'mml'), 'num': 3}, 'extra_info': '', 'exp_path': 'runs\\Pretext_random_rot\\CVTSLANet_ads-b_iq_powerNorm\\0523_161017', 'save_path': 'runs\\Pretext_random_rot\\CVTSLANet_ads-b_iq_powerNorm'}
+[27496] [2026-05-23 16:10:17] INFO: ==> Loading pretrain datasets.
+[27496] [2026-05-23 16:11:12] INFO: ==> Instantiating specified model.
+[27496] [2026-05-23 16:11:13] INFO: ==> Creating loss functions.
+[27496] [2026-05-23 16:11:13] INFO: ==> Generating optimizers for step 1.
+[27496] [2026-05-23 16:11:16] INFO: ==> Starting pretext task.
+[27496] [2026-05-23 16:11:16] INFO: --------------------------------------------
+[27496] [2026-05-23 16:11:16] INFO: Epoch 1/5
+[27496] [2026-05-23 16:11:16] INFO: ==> lr = 0.001
+[27496] [2026-05-23 16:15:37] INFO: ==> Train Set: Rot-Acc: 13.41%, SEI-Acc: 11.50%, Mixed-Acc: 5.17%, ROT_CLS: 2.08386966, SEI_CLS: 3.39884679, MML: 4.26830514, Total: 7.013232
+[27496] [2026-05-23 16:16:01] INFO: ==> Val Set: Rot-Acc: 15.95%, SEI-Acc: 21.60%, Mixed-Acc: 8.82%, ROT_CLS: 2.06688643, SEI_CLS: 2.56907097, MML: 3.97603689, Total: 6.506041
+[27496] [2026-05-23 16:16:01] INFO: ==> Best model is saved in epoch 1.
+[27496] [2026-05-23 16:16:01] INFO: ==> Time spend (current/mean/total/remain): [00:04:45]/[00:04:45]/[00:04:45]/[00:19:01]
+[27496] [2026-05-23 16:16:01] INFO: --------------------------------------------
+[27496] [2026-05-23 16:16:01] INFO: Epoch 2/5
+[27496] [2026-05-23 16:16:01] INFO: ==> lr = 0.001
+[27496] [2026-05-23 16:20:19] INFO: ==> Train Set: Rot-Acc: 16.60%, SEI-Acc: 28.20%, Mixed-Acc: 10.59%, ROT_CLS: 2.05494956, SEI_CLS: 2.27286514, MML: 3.88362706, Total: 6.354267
+[27496] [2026-05-23 16:20:42] INFO: ==> Val Set: Rot-Acc: 20.79%, SEI-Acc: 36.19%, Mixed-Acc: 13.56%, ROT_CLS: 1.98544215, SEI_CLS: 1.93181792, MML: 3.71606223, Total: 6.084344
+[27496] [2026-05-23 16:20:42] INFO: ==> Best model is saved in epoch 2.
+[27496] [2026-05-23 16:20:42] INFO: ==> Time spend (current/mean/total/remain): [00:04:41]/[00:04:43]/[00:09:26]/[00:14:10]
+[27496] [2026-05-23 16:20:42] INFO: --------------------------------------------
+[27496] [2026-05-23 16:20:42] INFO: Epoch 3/5
+[27496] [2026-05-23 16:20:42] INFO: ==> lr = 0.001
+[27496] [2026-05-23 16:25:00] INFO: ==> Train Set: Rot-Acc: 23.55%, SEI-Acc: 39.53%, Mixed-Acc: 14.17%, ROT_CLS: 1.92649110, SEI_CLS: 1.82767852, MML: 3.61000382, Total: 5.940581
+[27496] [2026-05-23 16:25:23] INFO: ==> Val Set: Rot-Acc: 30.16%, SEI-Acc: 39.65%, Mixed-Acc: 16.28%, ROT_CLS: 1.76497936, SEI_CLS: 1.72304893, MML: 3.71224310, Total: 5.829724
+[27496] [2026-05-23 16:25:23] INFO: ==> Best model is saved in epoch 3.
+[27496] [2026-05-23 16:25:24] INFO: ==> Time spend (current/mean/total/remain): [00:04:41]/[00:04:42]/[00:14:08]/[00:09:25]
+[27496] [2026-05-23 16:25:24] INFO: --------------------------------------------
+[27496] [2026-05-23 16:25:24] INFO: Epoch 4/5
+[27496] [2026-05-23 16:25:24] INFO: ==> lr = 0.001
+[27496] [2026-05-23 16:29:37] INFO: ==> Train Set: Rot-Acc: 35.47%, SEI-Acc: 46.08%, Mixed-Acc: 16.86%, ROT_CLS: 1.67334363, SEI_CLS: 1.58779446, MML: 3.46553135, Total: 5.556935
+[27496] [2026-05-23 16:30:01] INFO: ==> Val Set: Rot-Acc: 47.21%, SEI-Acc: 48.92%, Mixed-Acc: 17.70%, ROT_CLS: 1.42005884, SEI_CLS: 1.43040044, MML: 3.52395387, Total: 5.365946
+[27496] [2026-05-23 16:30:01] INFO: ==> Best model is saved in epoch 4.
+[27496] [2026-05-23 16:30:01] INFO: ==> Time spend (current/mean/total/remain): [00:04:37]/[00:04:41]/[00:18:45]/[00:04:41]
+[27496] [2026-05-23 16:30:01] INFO: --------------------------------------------
+[27496] [2026-05-23 16:30:01] INFO: Epoch 5/5
+[27496] [2026-05-23 16:30:01] INFO: ==> lr = 0.001
+[27496] [2026-05-23 16:34:13] INFO: ==> Train Set: Rot-Acc: 48.31%, SEI-Acc: 51.23%, Mixed-Acc: 18.42%, ROT_CLS: 1.37883103, SEI_CLS: 1.40990421, MML: 3.33355069, Total: 5.253364
+[27496] [2026-05-23 16:34:37] INFO: ==> Val Set: Rot-Acc: 59.21%, SEI-Acc: 55.11%, Mixed-Acc: 18.62%, ROT_CLS: 1.12378967, SEI_CLS: 1.25737078, MML: 3.38892584, Total: 5.053841
+[27496] [2026-05-23 16:34:37] INFO: ==> Best model is saved in epoch 5.
+[27496] [2026-05-23 16:34:37] INFO: ==> Time spend (current/mean/total/remain): [00:04:35]/[00:04:40]/[00:23:21]/[00:00:00]
+[27496] [2026-05-23 16:34:37] INFO: --------------------------------------------
+[27496] [2026-05-23 16:34:37] INFO: End. Best Record: {'epoch': 4, 'acc': [59.20541158536585, 55.109247967479675, 18.61825228433631], 'loss': [1.123789665660238, 1.257370783061516, 3.388925839245804, 5.053841381538205]}

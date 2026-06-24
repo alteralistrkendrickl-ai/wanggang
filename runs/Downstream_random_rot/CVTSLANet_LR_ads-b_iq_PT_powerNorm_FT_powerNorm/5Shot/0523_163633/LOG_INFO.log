@@ -1,0 +1,11 @@
+[47128] [2026-05-23 16:36:33] INFO: ==> Running file: E:\code\辐射源个体识别代码\P3MC-main\downstream_lr.py
+[47128] [2026-05-23 16:36:33] INFO: ==> Config: {'exp_name': 'CVTSLANet_LR_ads-b_iq_PT_powerNorm_FT_powerNorm', 'exp_type': 'Downstream_random_rot', 'random_seed': 2024, 'platform': 'windows', 'device': 'cuda', 'iteration': 3, 'epoch': 100, 'dataset': {'name': 'ads-b', 'root': 'e:\\code\\辐射源个体识别代码\\P3MC-main\\Datasets\\ADS-B', 'type': 'iq', 'normalize': 'power', 'train_batch_size': 30, 'test_batch_size': 30, 'ratio': 0.2, 'num_classes': 30, 'shot': 5, 'snr': None}, 'encoder': {'name': 'CVTSLANet', 'root': 'models/CVTSLANetFeature.py', 'feature_dim': 1024, 'pretrain_path': './runs/Pretext_random_rot\\CVTSLANet_ads-b_iq_powerNorm\\best_encoder.pth', 'TSLA_config': {'seq_len': 4800, 'patch_size': 32, 'num_channels': 2, 'emb_dim': 256, 'depth': 3, 'dropout_rate': 0.3}}, 'classifier': {'name': 'lr', 'root': '', 'in_dim': 1024, 'ratio': 0.2, 'num_classes': 30}, 'optimizer': {'lr': 0.001, 'weight_decay': 0}, 'extra_info': '', 'exp_path': 'runs\\Downstream_random_rot\\CVTSLANet_LR_ads-b_iq_PT_powerNorm_FT_powerNorm\\5Shot\\0523_163633', 'save_path': 'runs\\Downstream_random_rot\\CVTSLANet_LR_ads-b_iq_PT_powerNorm_FT_powerNorm'}
+[47128] [2026-05-23 16:36:33] INFO: --------------------------------------------
+[47128] [2026-05-23 16:36:33] INFO: Iteration 1/3
+[47128] [2026-05-23 16:36:43] INFO: Acc: 66.90%
+[47128] [2026-05-23 16:36:43] INFO: --------------------------------------------
+[47128] [2026-05-23 16:36:43] INFO: Iteration 2/3
+[47128] [2026-05-23 16:36:46] INFO: Acc: 69.13%
+[47128] [2026-05-23 16:36:46] INFO: --------------------------------------------
+[47128] [2026-05-23 16:36:46] INFO: Iteration 3/3
+[47128] [2026-05-23 16:36:49] INFO: Acc: 74.90%
