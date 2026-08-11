@@ -60,13 +60,23 @@ def _normalize_sample(sample, normalize):
 class PretrainIQDataset(Dataset):
     """Memory-mapped IQ dataset with on-demand phase rotation augmentation."""
 
-    def __init__(self, x_path, y_path, indices, rot_num, normalize="power", signal_length=4800):
+    def __init__(self, x_path, y_path, indices, rot_num, normalize="power", signal_length=None):
         self.x = np.load(x_path, mmap_mode="r")
         self.y = np.load(y_path, mmap_mode="r")
         self.indices = np.asarray(indices)
         self.rot_num = rot_num
         self.normalize = normalize
-        self.signal_length = signal_length
+        if self.x.ndim != 3 or 2 not in self.x.shape[1:]:
+            raise ValueError(f"Expected IQ array shaped (N, 2, L) or (N, L, 2), got {self.x.shape}")
+        available_length = self.x.shape[2] if self.x.shape[1] == 2 else self.x.shape[1]
+        self.signal_length = available_length if signal_length is None else int(signal_length)
+        if available_length != self.signal_length:
+            raise ValueError(
+                f"Configured signal length {self.signal_length} does not match {x_path} "
+                f"with length {available_length}"
+            )
+        if len(self.x) != len(self.y):
+            raise ValueError(f"X/Y length mismatch: {x_path} ({len(self.x)}) / {y_path} ({len(self.y)})")
 
     def __len__(self):
         return len(self.indices)
@@ -152,7 +162,7 @@ def power_normalize_fn(x):
     return x
 
 
-def load_data(dataset_root, num_class, suffix, ch_type=None):
+def load_data(dataset_root, num_class, suffix, ch_type=None, signal_length=None):
     x_path, y_path = _dataset_paths(dataset_root, num_class, suffix, ch_type)
     x = np.load(x_path)
     y = np.load(y_path)
@@ -160,7 +170,14 @@ def load_data(dataset_root, num_class, suffix, ch_type=None):
     if len(x.shape) == 3 and x.shape[1] != 2:
         x = x.transpose((0, 2, 1))
 
-    return x[:, :, :4800], y
+    if len(x.shape) != 3 or x.shape[1] != 2:
+        raise ValueError(f"Expected IQ array shaped (N, 2, L), got {x.shape} from {x_path}")
+    if signal_length is not None and x.shape[2] != signal_length:
+        raise ValueError(
+            f"Configured signal length {signal_length} does not match {x_path} with length {x.shape[2]}"
+        )
+
+    return x[:, :, :signal_length] if signal_length is not None else x[:, :, :4800], y
 
 
 def pt_train_data(dataset_root, num_class, rot_num, normalize_dataX=default_normalize_fn):
@@ -178,8 +195,8 @@ def pt_train_data(dataset_root, num_class, rot_num, normalize_dataX=default_norm
     return x, y_rot, y_device
 
 
-def ft_train_data(random_seed, dataset_root, num_class, k_shot, normalize_dataX=default_normalize_fn):
-    x, y = load_data(dataset_root, num_class, "train")
+def ft_train_data(random_seed, dataset_root, num_class, k_shot, normalize_dataX=default_normalize_fn, signal_length=None):
+    x, y = load_data(dataset_root, num_class, "train", signal_length=signal_length)
     if len(x.shape) == 5:
         x = x[:, 0, :, :, :]
 
@@ -200,8 +217,8 @@ def ft_train_data(random_seed, dataset_root, num_class, k_shot, normalize_dataX=
     return x, y
 
 
-def ft_test_data(dataset_root, num_class, normalize_dataX=default_normalize_fn):
-    x, y = load_data(dataset_root, num_class, "test")
+def ft_test_data(dataset_root, num_class, normalize_dataX=default_normalize_fn, signal_length=None):
+    x, y = load_data(dataset_root, num_class, "test", signal_length=signal_length)
     if len(x.shape) == 5:
         x = x[:, 0, :, :, :]
 
@@ -225,22 +242,39 @@ def get_pretrain_dataloader(opt):
             "Use --normalize_fn power, sample, or none."
         )
 
-    x_path, y_path = _dataset_paths(
+    train_x_path, train_y_path = _dataset_paths(
         opt_dataset["root"], opt_dataset["num_classes"], "train"
     )
-    labels = np.load(y_path, mmap_mode="r")
-    all_indices = np.arange(len(labels))
-    train_indices, val_indices = train_test_split(
-        all_indices,
-        test_size=opt_dataset["ratio"],
-        random_state=opt["random_seed"],
-        stratify=np.asarray(labels),
-    )
+    signal_length = opt_dataset.get("signal_length")
+    try:
+        val_x_path, val_y_path = _dataset_paths(
+            opt_dataset["root"], opt_dataset["num_classes"], "val"
+        )
+    except FileNotFoundError:
+        val_x_path = val_y_path = None
+
+    train_labels = np.load(train_y_path, mmap_mode="r")
+    if val_x_path is not None:
+        val_labels = np.load(val_y_path, mmap_mode="r")
+        train_indices = np.arange(len(train_labels))
+        val_indices = np.arange(len(val_labels))
+    else:
+        all_indices = np.arange(len(train_labels))
+        train_indices, val_indices = train_test_split(
+            all_indices,
+            test_size=opt_dataset["ratio"],
+            random_state=opt["random_seed"],
+            stratify=np.asarray(train_labels),
+        )
+        val_x_path, val_y_path = train_x_path, train_y_path
+
     train_dataset = PretrainIQDataset(
-        x_path, y_path, train_indices, rot_num, opt_dataset["normalize"]
+        train_x_path, train_y_path, train_indices, rot_num,
+        opt_dataset["normalize"], signal_length=signal_length
     )
     val_dataset = PretrainIQDataset(
-        x_path, y_path, val_indices, rot_num, opt_dataset["normalize"]
+        val_x_path, val_y_path, val_indices, rot_num,
+        opt_dataset["normalize"], signal_length=signal_length
     )
 
     pin_memory = opt.get("device") == "cuda"
@@ -276,9 +310,13 @@ def get_finetune_dataloader(opt):
         normalize_fn = default_normalize_fn
 
     X_train, Y_train = ft_train_data(
-        opt["random_seed"], opt_dataset["root"], opt_dataset["num_classes"], k_shot, normalize_fn
+        opt["random_seed"], opt_dataset["root"], opt_dataset["num_classes"], k_shot,
+        normalize_fn, signal_length=opt_dataset.get("signal_length")
     )
-    X_test, Y_test = ft_test_data(opt_dataset["root"], opt_dataset["num_classes"], normalize_fn)
+    X_test, Y_test = ft_test_data(
+        opt_dataset["root"], opt_dataset["num_classes"], normalize_fn,
+        signal_length=opt_dataset.get("signal_length")
+    )
     if snr is not None:
         X_test = add_noise(X_test, snr=snr)
 

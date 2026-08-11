@@ -43,6 +43,30 @@ dataset_path_dict = {
         "ft_class": 6
     }
 }
+
+_wisig_linux_root = os.environ.get(
+    "WISIG_P3MC_ROOT", "~/Datasets/WiSig_P3MC_strict_v1"
+)
+_wisig_windows_root = os.environ.get(
+    "WISIG_P3MC_ROOT_WINDOWS", r"E:\Datasets\WiSig_P3MC_strict_v1"
+)
+for protocol, directory in (
+    ("cross-rx", "ManyTx_cross_rx"),
+    ("cross-day", "ManyTx_cross_day"),
+):
+    base_config = {
+        "name": f"wisig-{protocol}",
+        "linux": os.path.join(_wisig_linux_root, directory),
+        "windows": os.path.join(_wisig_windows_root, directory),
+        "pt_class": 90,
+        "ft_class": 30,
+    }
+    dataset_path_dict[f"wisig-{protocol}"] = base_config
+    for ft_class in (10, 20, 30):
+        alias = deepcopy(base_config)
+        alias["ft_class"] = ft_class
+        dataset_path_dict[f"wisig-{protocol}-{ft_class}"] = alias
+
 for ft_class in [30, 20, 10]:
     dataset_path_dict[f"ads-b{ft_class}"] = deepcopy(dataset_path_dict["ads-b"])
     dataset_path_dict[f"ads-b{ft_class}"]["ft_class"] = ft_class
@@ -161,6 +185,11 @@ def pretrain_config(encoder_name="ResNet18", classifiar_name="Linear", dataset_n
     _validate_choice(opt.dataset, dataset_path_dict, "dataset")
     if opt.rot_num < 2:
         raise ValueError("rot_num must be at least 2")
+    if "TSLA" in opt.encoder:
+        if tsla_conf["seq_len"] <= 0:
+            raise ValueError("TSLA_len must be positive")
+        if tsla_conf["patch_size"] < 2 or tsla_conf["patch_size"] > tsla_conf["seq_len"]:
+            raise ValueError("TSLA_patch must be between 2 and TSLA_len")
     if opt.awgn_min > opt.awgn_max:
         raise ValueError("awgn_min cannot be greater than awgn_max")
 
@@ -201,7 +230,8 @@ def pretrain_config(encoder_name="ResNet18", classifiar_name="Linear", dataset_n
             "normalize": dataset_norm,
             "batch_size": opt.batch_size,
             "ratio": 0.2,
-            "num_classes": num_classes
+            "num_classes": num_classes,
+            "signal_length": tsla_conf["seq_len"] if "TSLA" in opt.encoder else None,
         },
         "augmentation": {
             "awgn_enable": opt.awgn_enable,
@@ -292,6 +322,11 @@ def finetune_config(encoder_name="ResNet18", classifier_name="Linear", dataset_n
     _validate_choice(opt.dataset, dataset_path_dict, "dataset")
 
     tsla_conf = TSLA_parse_args(opt)
+    if "TSLA" in opt.encoder:
+        if tsla_conf["seq_len"] <= 0:
+            raise ValueError("TSLA_len must be positive")
+        if tsla_conf["patch_size"] < 2 or tsla_conf["patch_size"] > tsla_conf["seq_len"]:
+            raise ValueError("TSLA_patch must be between 2 and TSLA_len")
 
     loss_item = ["rot_cls", "sei_cls", "mml"]
     ablate_item = ([opt.ablate] if not isinstance(opt.ablate, list) else opt.ablate) if opt.ablate else []
@@ -327,6 +362,7 @@ def finetune_config(encoder_name="ResNet18", classifier_name="Linear", dataset_n
             "test_batch_size": opt.test_batch_size,
             "ratio": 0.2,
             "num_classes": num_classes,
+            "signal_length": tsla_conf["seq_len"] if "TSLA" in opt.encoder else None,
             "shot": opt.shot if isinstance(opt.shot, list) else [opt.shot],
             "snr": (opt.snr if isinstance(opt.snr, list) else [opt.snr]) if opt.snr_enable else [None]
         },
