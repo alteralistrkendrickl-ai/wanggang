@@ -47,6 +47,27 @@ def axis_summary(counter, axis_size):
     }
 
 
+def domain_coverage_summary(counts, names):
+    summaries = []
+    for domain_index in range(counts.shape[1]):
+        domain_counts = counts[:, domain_index]
+        nonzero_counts = domain_counts[domain_counts > 0]
+        summaries.append(
+            {
+                "index": domain_index,
+                "name": str(names[domain_index]),
+                "tx_nonzero": int(np.count_nonzero(domain_counts)),
+                "missing_tx_indices": np.flatnonzero(domain_counts == 0).astype(int).tolist(),
+                "samples_min_all_tx": int(domain_counts.min()) if domain_counts.size else 0,
+                "samples_min_nonzero_tx": int(nonzero_counts.min()) if nonzero_counts.size else 0,
+                "samples_median_all_tx": float(np.median(domain_counts)) if domain_counts.size else 0.0,
+                "samples_max_all_tx": int(domain_counts.max()) if domain_counts.size else 0,
+                "samples_total": int(domain_counts.sum()),
+            }
+        )
+    return summaries
+
+
 def audit_dataset(dataset, sample_block_limit=32, sample_element_limit=1_000_000):
     required_keys = [
         "data",
@@ -96,6 +117,14 @@ def audit_dataset(dataset, sample_block_limit=32, sample_element_limit=1_000_000
     observed_rx_lengths = Counter()
     observed_date_lengths = Counter()
     observed_equalized_lengths = Counter()
+    tx_rx_counts_by_equalized = [
+        np.zeros((len(tx_list), len(rx_list)), dtype=np.int64)
+        for _ in equalized_list
+    ]
+    tx_date_counts_by_equalized = [
+        np.zeros((len(tx_list), len(date_list)), dtype=np.int64)
+        for _ in equalized_list
+    ]
 
     for tx_index, tx_data in enumerate(data):
         rx_length = safe_len(tx_data)
@@ -135,6 +164,14 @@ def audit_dataset(dataset, sample_block_limit=32, sample_element_limit=1_000_000
                     total_by_date[date_index] += signal_count
                     total_by_equalized[equalized_index] += signal_count
                     tx_domain_pairs[tx_index].add((rx_index, date_index))
+                    if (
+                        tx_index < len(tx_list)
+                        and rx_index < len(rx_list)
+                        and date_index < len(date_list)
+                        and equalized_index < len(equalized_list)
+                    ):
+                        tx_rx_counts_by_equalized[equalized_index][tx_index, rx_index] += signal_count
+                        tx_date_counts_by_equalized[equalized_index][tx_index, date_index] += signal_count
                     shape_counts[str(tuple(int(x) for x in array.shape))] += 1
                     dtype_counts[str(array.dtype)] += 1
 
@@ -178,6 +215,11 @@ def audit_dataset(dataset, sample_block_limit=32, sample_element_limit=1_000_000
             "date": [str(item) for item in date_list[:5]],
             "equalized": [str(item) for item in equalized_list[:5]],
         },
+        "metadata_values": {
+            "rx": [str(item) for item in rx_list],
+            "date": [str(item) for item in date_list],
+            "equalized": [str(item) for item in equalized_list],
+        },
         "observed_nested_lengths": {
             "outer_tx": observed_outer_tx,
             "rx_lengths": dict(observed_rx_lengths),
@@ -205,6 +247,19 @@ def audit_dataset(dataset, sample_block_limit=32, sample_element_limit=1_000_000
             "rx_day_pairs_per_tx_median": float(np.median(tx_domain_counts)) if tx_domain_counts.size else 0.0,
             "rx_day_pairs_per_tx_max": int(tx_domain_counts.max()) if tx_domain_counts.size else 0,
         },
+        "domain_coverage_by_equalized": [
+            {
+                "equalized_index": equalized_index,
+                "equalized_value": str(equalized_list[equalized_index]),
+                "rx": domain_coverage_summary(
+                    tx_rx_counts_by_equalized[equalized_index], rx_list
+                ),
+                "date": domain_coverage_summary(
+                    tx_date_counts_by_equalized[equalized_index], date_list
+                ),
+            }
+            for equalized_index in range(len(equalized_list))
+        ],
         "sampled_numeric_check": {
             "blocks": len(sampled_blocks),
             "elements": sampled_elements,
