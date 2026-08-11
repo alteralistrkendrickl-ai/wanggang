@@ -217,8 +217,10 @@ def ft_train_data(random_seed, dataset_root, num_class, k_shot, normalize_dataX=
     return x, y
 
 
-def ft_test_data(dataset_root, num_class, normalize_dataX=default_normalize_fn, signal_length=None):
-    x, y = load_data(dataset_root, num_class, "test", signal_length=signal_length)
+def ft_test_data(dataset_root, num_class, normalize_dataX=default_normalize_fn, signal_length=None, suffix="test"):
+    if suffix not in {"val", "test"}:
+        raise ValueError(f"Query split must be 'val' or 'test', got {suffix!r}")
+    x, y = load_data(dataset_root, num_class, suffix, signal_length=signal_length)
     if len(x.shape) == 5:
         x = x[:, 0, :, :, :]
 
@@ -315,7 +317,8 @@ def get_finetune_dataloader(opt):
     )
     X_test, Y_test = ft_test_data(
         opt_dataset["root"], opt_dataset["num_classes"], normalize_fn,
-        signal_length=opt_dataset.get("signal_length")
+        signal_length=opt_dataset.get("signal_length"),
+        suffix=opt_dataset.get("query_split", "test")
     )
     if snr is not None:
         X_test = add_noise(X_test, snr=snr)

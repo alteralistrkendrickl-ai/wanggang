@@ -60,12 +60,18 @@ for protocol, directory in (
         "windows": os.path.join(_wisig_windows_root, directory),
         "pt_class": 90,
         "ft_class": 30,
+        "query_split": "test",
     }
     dataset_path_dict[f"wisig-{protocol}"] = base_config
     for ft_class in (10, 20, 30):
         alias = deepcopy(base_config)
         alias["ft_class"] = ft_class
         dataset_path_dict[f"wisig-{protocol}-{ft_class}"] = alias
+    validation_config = deepcopy(base_config)
+    validation_config["linux"] = os.path.join(base_config["linux"], "validation_novel")
+    validation_config["windows"] = os.path.join(base_config["windows"], "validation_novel")
+    validation_config["query_split"] = "val"
+    dataset_path_dict[f"wisig-{protocol}-validation-30"] = validation_config
 
 for ft_class in [30, 20, 10]:
     dataset_path_dict[f"ads-b{ft_class}"] = deepcopy(dataset_path_dict["ads-b"])
@@ -363,6 +369,7 @@ def finetune_config(encoder_name="ResNet18", classifier_name="Linear", dataset_n
             "ratio": 0.2,
             "num_classes": num_classes,
             "signal_length": tsla_conf["seq_len"] if "TSLA" in opt.encoder else None,
+            "query_split": dataset_path_dict[opt.dataset].get("query_split", "test"),
             "shot": opt.shot if isinstance(opt.shot, list) else [opt.shot],
             "snr": (opt.snr if isinstance(opt.snr, list) else [opt.snr]) if opt.snr_enable else [None]
         },
