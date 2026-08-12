@@ -12,6 +12,7 @@ import json
 import math
 import os
 import random
+import re
 from pathlib import Path
 
 import numpy as np
@@ -50,6 +51,11 @@ def parse_args():
     parser.add_argument("--query-batch-size", type=int, default=256)
     parser.add_argument("--device", choices=("auto", "cpu", "cuda"), default="auto")
     parser.add_argument("--output-dir", default="runs/WiSig_validation_lr")
+    parser.add_argument(
+        "--resume-log",
+        default="",
+        help="Recover completed SHOT/ITERATION/SEED/ACC records from a prior log.",
+    )
     return parser.parse_args()
 
 
@@ -174,10 +180,154 @@ def extract_features(encoder, dataloader, device, description):
 
 def write_csv(path, fieldnames, rows):
     path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("w", newline="", encoding="utf-8-sig") as handle:
+    temporary = path.with_suffix(path.suffix + ".tmp")
+    with temporary.open("w", newline="", encoding="utf-8-sig") as handle:
         writer = csv.DictWriter(handle, fieldnames=fieldnames)
         writer.writeheader()
         writer.writerows(rows)
+        handle.flush()
+        os.fsync(handle.fileno())
+    temporary.replace(path)
+
+
+DETAIL_FIELDS = (
+    "protocol",
+    "role",
+    "checkpoint",
+    "checkpoint_sha256",
+    "shot",
+    "iteration",
+    "seed",
+    "accuracy",
+    "source",
+)
+
+SUMMARY_FIELDS = (
+    "protocol",
+    "role",
+    "checkpoint",
+    "checkpoint_sha256",
+    "shot",
+    "n",
+    "mean_accuracy",
+    "std_accuracy",
+    "ci95_half",
+)
+
+RESULT_PATTERN = re.compile(
+    r"SHOT=(?P<shot>\d+)\s+ITERATION=(?P<iteration>\d+)/(?:\d+)\s+"
+    r"SEED=(?P<seed>\d+)\s+ACC=(?P<accuracy>\d+(?:\.\d+)?)"
+)
+
+
+def recover_log_rows(path, args, checkpoint_hash):
+    if not path:
+        return []
+    log_path = Path(path).expanduser().resolve()
+    if not log_path.is_file():
+        raise FileNotFoundError(f"Resume log not found: {log_path}")
+    content = log_path.read_text(encoding="utf-8", errors="replace")
+    protocol_match = re.search(r"^PROTOCOL=(\S+)", content, re.MULTILINE)
+    hash_match = re.search(r"^CHECKPOINT_SHA256=([0-9a-f]{64})", content, re.MULTILINE)
+    if not protocol_match or protocol_match.group(1) != args.protocol:
+        raise RuntimeError("Resume log protocol does not match this run")
+    if not hash_match or hash_match.group(1) != checkpoint_hash:
+        raise RuntimeError("Resume log checkpoint SHA256 does not match this run")
+
+    allowed_shots = set(args.shots)
+    rows_by_key = {}
+    for match in RESULT_PATTERN.finditer(content):
+        shot = int(match.group("shot"))
+        iteration = int(match.group("iteration"))
+        seed = int(match.group("seed"))
+        accuracy = float(match.group("accuracy"))
+        if shot not in allowed_shots or not 1 <= iteration <= args.iterations:
+            continue
+        expected_seed = args.base_seed + iteration - 1
+        if seed != expected_seed:
+            raise RuntimeError(
+                f"Resume log seed mismatch for shot={shot}, iteration={iteration}: "
+                f"expected {expected_seed}, got {seed}"
+            )
+        key = (shot, iteration)
+        previous = rows_by_key.get(key)
+        if previous is not None and previous["accuracy"] != f"{accuracy:.8f}":
+            raise RuntimeError(f"Conflicting duplicate result in resume log: {key}")
+        rows_by_key[key] = {
+            "protocol": args.protocol,
+            "role": "validation",
+            "checkpoint": args.checkpoint,
+            "checkpoint_sha256": checkpoint_hash,
+            "shot": shot,
+            "iteration": iteration,
+            "seed": seed,
+            "accuracy": f"{accuracy:.8f}",
+            "source": f"recovered:{log_path.name}",
+        }
+    return [rows_by_key[key] for key in sorted(rows_by_key)]
+
+
+def recover_csv_rows(path, args, checkpoint_hash):
+    if not path.is_file():
+        return []
+    rows = []
+    with path.open("r", newline="", encoding="utf-8-sig") as handle:
+        for row in csv.DictReader(handle):
+            shot = int(row["shot"])
+            iteration = int(row["iteration"])
+            seed = int(row["seed"])
+            if row["protocol"] != args.protocol:
+                raise RuntimeError("Existing CSV protocol does not match this run")
+            if row["checkpoint_sha256"] != checkpoint_hash:
+                raise RuntimeError("Existing CSV checkpoint SHA256 does not match this run")
+            if seed != args.base_seed + iteration - 1:
+                raise RuntimeError("Existing CSV seed schedule does not match this run")
+            if shot in args.shots and 1 <= iteration <= args.iterations:
+                row["source"] = row.get("source") or "existing_csv"
+                rows.append(row)
+    return rows
+
+
+def merge_detail_rows(*row_groups):
+    merged = {}
+    for rows in row_groups:
+        for row in rows:
+            key = (int(row["shot"]), int(row["iteration"]))
+            previous = merged.get(key)
+            if previous is not None and not math.isclose(
+                float(previous["accuracy"]), float(row["accuracy"]), abs_tol=1e-8
+            ):
+                raise RuntimeError(f"Conflicting recovered results for {key}")
+            if previous is None:
+                merged[key] = row
+    return [merged[key] for key in sorted(merged)]
+
+
+def summarize_rows(rows, args, checkpoint_hash):
+    summaries = []
+    for shot in args.shots:
+        values = np.asarray(
+            [float(row["accuracy"]) for row in rows if int(row["shot"]) == shot],
+            dtype=np.float64,
+        )
+        if len(values) != args.iterations:
+            continue
+        std = float(values.std(ddof=1)) if len(values) > 1 else 0.0
+        ci95 = 1.96 * std / math.sqrt(len(values))
+        summaries.append(
+            {
+                "protocol": args.protocol,
+                "role": "validation",
+                "checkpoint": args.checkpoint,
+                "checkpoint_sha256": checkpoint_hash,
+                "shot": shot,
+                "n": len(values),
+                "mean_accuracy": f"{values.mean():.8f}",
+                "std_accuracy": f"{std:.8f}",
+                "ci95_half": f"{ci95:.8f}",
+            }
+        )
+    return summaries
 
 
 def main():
@@ -217,8 +367,19 @@ def main():
     output_root = Path(args.output_dir).expanduser().resolve()
     run_name = f"{args.protocol}_{args.checkpoint}_{checkpoint_hash[:12]}"
     run_dir = output_root / run_name
-    detail_rows = []
-    summary_rows = []
+    detail_rows = merge_detail_rows(
+        recover_csv_rows(run_dir / "iterations.csv", args, checkpoint_hash),
+        recover_log_rows(args.resume_log, args, checkpoint_hash),
+    )
+    completed = {(int(row["shot"]), int(row["iteration"])) for row in detail_rows}
+    run_dir.mkdir(parents=True, exist_ok=True)
+    if detail_rows:
+        write_csv(run_dir / "iterations.csv", DETAIL_FIELDS, detail_rows)
+        write_csv(
+            run_dir / "summary.csv",
+            SUMMARY_FIELDS,
+            summarize_rows(detail_rows, args, checkpoint_hash),
+        )
 
     print(f"PROTOCOL={args.protocol}")
     print("ROLE=validation")
@@ -228,10 +389,13 @@ def main():
     print(f"CHECKPOINT_SHA256={checkpoint_hash}")
     print(f"DEVICE={device}")
     print(f"QUERY_SAMPLES={len(query_labels)}")
+    print(f"RECOVERED_ITERATIONS={len(detail_rows)}")
 
     for shot in args.shots:
-        accuracies = []
         for iteration in range(args.iterations):
+            iteration_number = iteration + 1
+            if (shot, iteration_number) in completed:
+                continue
             seed = args.base_seed + iteration
             set_seed(seed)
             support_x, support_y = sample_support(
@@ -249,7 +413,6 @@ def main():
             classifier = LogisticRegression(max_iter=1000, random_state=seed)
             classifier.fit(support_features, support_labels)
             accuracy = float(classifier.score(query_features, query_labels) * 100.0)
-            accuracies.append(accuracy)
             detail_rows.append(
                 {
                     "protocol": args.protocol,
@@ -257,65 +420,41 @@ def main():
                     "checkpoint": args.checkpoint,
                     "checkpoint_sha256": checkpoint_hash,
                     "shot": shot,
-                    "iteration": iteration + 1,
+                    "iteration": iteration_number,
                     "seed": seed,
                     "accuracy": f"{accuracy:.8f}",
+                    "source": "computed",
                 }
             )
+            completed.add((shot, iteration_number))
+            detail_rows.sort(key=lambda row: (int(row["shot"]), int(row["iteration"])))
+            write_csv(run_dir / "iterations.csv", DETAIL_FIELDS, detail_rows)
+            write_csv(
+                run_dir / "summary.csv",
+                SUMMARY_FIELDS,
+                summarize_rows(detail_rows, args, checkpoint_hash),
+            )
             print(
-                f"SHOT={shot} ITERATION={iteration + 1}/{args.iterations} "
+                f"SHOT={shot} ITERATION={iteration_number}/{args.iterations} "
                 f"SEED={seed} ACC={accuracy:.4f}"
             )
-
-        values = np.asarray(accuracies, dtype=np.float64)
-        std = float(values.std(ddof=1)) if len(values) > 1 else 0.0
-        ci95 = 1.96 * std / math.sqrt(len(values))
-        summary = {
-            "protocol": args.protocol,
-            "role": "validation",
-            "checkpoint": args.checkpoint,
-            "checkpoint_sha256": checkpoint_hash,
-            "shot": shot,
-            "n": len(values),
-            "mean_accuracy": f"{values.mean():.8f}",
-            "std_accuracy": f"{std:.8f}",
-            "ci95_half": f"{ci95:.8f}",
-        }
-        summary_rows.append(summary)
+        shot_rows = [row for row in detail_rows if int(row["shot"]) == shot]
+        if len(shot_rows) != args.iterations:
+            raise RuntimeError(f"Shot {shot} finished with only {len(shot_rows)} rows")
+        summary = next(
+            row for row in summarize_rows(detail_rows, args, checkpoint_hash)
+            if int(row["shot"]) == shot
+        )
         print(
-            f"SUMMARY SHOT={shot} N={len(values)} MEAN={values.mean():.4f} "
-            f"STD={std:.4f} CI95_HALF={ci95:.4f}"
+            f"SUMMARY SHOT={shot} N={summary['n']} "
+            f"MEAN={float(summary['mean_accuracy']):.4f} "
+            f"STD={float(summary['std_accuracy']):.4f} "
+            f"CI95_HALF={float(summary['ci95_half']):.4f}"
         )
 
-    write_csv(
-        run_dir / "iterations.csv",
-        (
-            "protocol",
-            "role",
-            "checkpoint",
-            "checkpoint_sha256",
-            "shot",
-            "iteration",
-            "seed",
-            "accuracy",
-        ),
-        detail_rows,
-    )
-    write_csv(
-        run_dir / "summary.csv",
-        (
-            "protocol",
-            "role",
-            "checkpoint",
-            "checkpoint_sha256",
-            "shot",
-            "n",
-            "mean_accuracy",
-            "std_accuracy",
-            "ci95_half",
-        ),
-        summary_rows,
-    )
+    summary_rows = summarize_rows(detail_rows, args, checkpoint_hash)
+    write_csv(run_dir / "iterations.csv", DETAIL_FIELDS, detail_rows)
+    write_csv(run_dir / "summary.csv", SUMMARY_FIELDS, summary_rows)
     metadata = {
         "protocol": args.protocol,
         "role": "validation",
@@ -329,6 +468,8 @@ def main():
         "feature_dim": args.feature_dim,
         "tsla_config": TSLA_CONFIG,
         "device": device,
+        "resume_log": str(Path(args.resume_log).expanduser().resolve()) if args.resume_log else "",
+        "recovered_iterations": sum(row["source"].startswith("recovered:") for row in detail_rows),
     }
     run_dir.mkdir(parents=True, exist_ok=True)
     (run_dir / "metadata.json").write_text(

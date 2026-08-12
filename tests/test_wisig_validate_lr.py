@@ -1,9 +1,11 @@
 import unittest
+from pathlib import Path
+from tempfile import TemporaryDirectory
 from types import SimpleNamespace
 
 import numpy as np
 
-from wisig_validate_lr import make_config, sample_support
+from wisig_validate_lr import make_config, recover_log_rows, sample_support
 
 
 class WiSigValidationLRTest(unittest.TestCase):
@@ -29,6 +31,29 @@ class WiSigValidationLRTest(unittest.TestCase):
         classes, counts = np.unique(first_y, return_counts=True)
         self.assertTrue(np.array_equal(classes, np.arange(30)))
         self.assertTrue(np.array_equal(counts, np.full(30, 2)))
+
+    def test_resume_log_recovers_completed_iterations(self):
+        args = SimpleNamespace(
+            protocol="cross-rx",
+            checkpoint="best",
+            shots=[1, 5],
+            iterations=100,
+            base_seed=2024,
+        )
+        checkpoint_hash = "a" * 64
+        content = (
+            "PROTOCOL=cross-rx\n"
+            f"CHECKPOINT_SHA256={checkpoint_hash}\n"
+            "SHOT=1 ITERATION=1/100 SEED=2024 ACC=46.0000\n"
+            "SHOT=5 ITERATION=2/100 SEED=2025 ACC=55.2500\n"
+        )
+        with TemporaryDirectory() as directory:
+            path = Path(directory) / "interrupted.log"
+            path.write_text(content, encoding="utf-8")
+            rows = recover_log_rows(path, args, checkpoint_hash)
+        self.assertEqual(len(rows), 2)
+        self.assertEqual((rows[0]["shot"], rows[0]["iteration"]), (1, 1))
+        self.assertEqual(rows[1]["accuracy"], "55.25000000")
 
 
 if __name__ == "__main__":
