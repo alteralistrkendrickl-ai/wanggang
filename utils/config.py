@@ -231,7 +231,17 @@ def pretrain_config(encoder_name="ResNet18", classifiar_name="Linear", dataset_n
         if item in loss_item:
             loss_item.remove(item)
             exp_suffix += f"_{item}Ablate"
-    a1_suffix = "_A1C" if opt.a1_enable else ("_A1S" if opt.a1_sampler else "")
+    if opt.a1_enable:
+        # Keep the original 0.1/0.1 pilot path stable, while ensuring any
+        # hyperparameter variant cannot overwrite its checkpoints.
+        if opt.a1_weight == 0.1 and opt.a1_temperature == 0.1:
+            a1_suffix = "_A1C"
+        else:
+            weight_tag = format(opt.a1_weight, ".8g").replace("-", "m").replace(".", "p")
+            temperature_tag = format(opt.a1_temperature, ".8g").replace("-", "m").replace(".", "p")
+            a1_suffix = f"_A1C_w{weight_tag}_t{temperature_tag}"
+    else:
+        a1_suffix = "_A1S" if opt.a1_sampler else ""
     exp = f"{opt.encoder}_{dataset_path_dict[opt.dataset]['name']}_{opt.input_type}_{opt.normalize_fn}Norm{exp_suffix}{a1_suffix}"
     platform = "windows" if sys.platform.startswith("win") else "linux"
     device = "cuda" if torch.cuda.is_available() else "cpu"
