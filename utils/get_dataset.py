@@ -5,6 +5,8 @@ import os
 import torch
 from torch.utils.data import TensorDataset, DataLoader, Dataset
 
+from utils.domain_batch_sampler import IdentityDomainBatchSampler
+
 
 def rot_data(x, rot_num=4):
     """
@@ -60,10 +62,12 @@ def _normalize_sample(sample, normalize):
 class PretrainIQDataset(Dataset):
     """Memory-mapped IQ dataset with on-demand phase rotation augmentation."""
 
-    def __init__(self, x_path, y_path, indices, rot_num, normalize="power", signal_length=None):
+    def __init__(self, x_path, y_path, indices, rot_num, normalize="power", signal_length=None,
+                 domain_path=None):
         self.x = np.load(x_path, mmap_mode="r")
         self.y = np.load(y_path, mmap_mode="r")
         self.indices = np.asarray(indices)
+        self.domains = np.load(domain_path, mmap_mode="r") if domain_path else None
         self.rot_num = rot_num
         self.normalize = normalize
         if self.x.ndim != 3 or 2 not in self.x.shape[1:]:
@@ -77,6 +81,8 @@ class PretrainIQDataset(Dataset):
             )
         if len(self.x) != len(self.y):
             raise ValueError(f"X/Y length mismatch: {x_path} ({len(self.x)}) / {y_path} ({len(self.y)})")
+        if self.domains is not None and len(self.domains) != len(self.y):
+            raise ValueError("Domain/Y length mismatch")
 
     def __len__(self):
         return len(self.indices)
@@ -101,11 +107,14 @@ class PretrainIQDataset(Dataset):
             rotated_samples[label, 0, segment] = cosine * real - sine * imag
             rotated_samples[label, 1, segment] = sine * real + cosine * imag
 
-        return (
+        result = (
             torch.from_numpy(rotated_samples),
             torch.arange(self.rot_num, dtype=torch.long),
             torch.tensor(int(self.y[index]), dtype=torch.long),
         )
+        if self.domains is not None:
+            result += (torch.tensor(int(self.domains[index]), dtype=torch.long),)
+        return result
     
 
 def add_noise(x, snr=20):
@@ -270,9 +279,22 @@ def get_pretrain_dataloader(opt):
         )
         val_x_path, val_y_path = train_x_path, train_y_path
 
+    a1_config = opt.get("a1", {})
+    domain_path = None
+    if a1_config.get("sampler_enabled"):
+        domain_key = a1_config.get("domain_key")
+        if domain_key not in {"RX", "DAY"}:
+            raise ValueError(f"Unsupported A1 domain key: {domain_key!r}")
+        domain_path = os.path.join(
+            os.path.expanduser(opt_dataset["root"]),
+            f"{domain_key}_train_{opt_dataset['num_classes']}Class.npy",
+        )
+        if not os.path.isfile(domain_path):
+            raise FileNotFoundError(f"A1 domain labels not found: {domain_path}")
+
     train_dataset = PretrainIQDataset(
         train_x_path, train_y_path, train_indices, rot_num,
-        opt_dataset["normalize"], signal_length=signal_length
+        opt_dataset["normalize"], signal_length=signal_length, domain_path=domain_path
     )
     val_dataset = PretrainIQDataset(
         val_x_path, val_y_path, val_indices, rot_num,
@@ -280,9 +302,24 @@ def get_pretrain_dataloader(opt):
     )
 
     pin_memory = opt.get("device") == "cuda"
-    train_dataloader = DataLoader(
-        train_dataset, batch_size=opt_dataset["batch_size"], shuffle=True, pin_memory=pin_memory
-    )
+    if a1_config.get("sampler_enabled"):
+        labels = np.asarray(train_dataset.y[train_dataset.indices])
+        domains = np.asarray(train_dataset.domains[train_dataset.indices])
+        batch_sampler = IdentityDomainBatchSampler(
+            labels,
+            domains,
+            identities_per_batch=a1_config["identities_per_batch"],
+            domains_per_identity=a1_config["domains_per_identity"],
+            samples_per_domain=a1_config["samples_per_domain"],
+            seed=opt["random_seed"],
+        )
+        train_dataloader = DataLoader(
+            train_dataset, batch_sampler=batch_sampler, pin_memory=pin_memory
+        )
+    else:
+        train_dataloader = DataLoader(
+            train_dataset, batch_size=opt_dataset["batch_size"], shuffle=True, pin_memory=pin_memory
+        )
     val_dataloader = DataLoader(
         val_dataset, batch_size=opt_dataset["batch_size"], shuffle=False, pin_memory=pin_memory
     )

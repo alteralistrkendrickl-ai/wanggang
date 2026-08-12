@@ -147,7 +147,8 @@ def TSLA_parse_args(opt):
 def pretrain_config(encoder_name="ResNet18", classifiar_name="Linear", dataset_name="ads-b", input_type="iq", rot_num=4, input_class=-1,
                     normalize_fn="power", batch_size=32, max_epoch=300, epoch_threshold=0.5, lr=0.001, lr_step=50, lr_gamma=0.1, momentum=0.9,
                     weight_decay=5e-4, feature_dim=2048, tsla_conf=None, mml_b=2.0, save_freq=50, RANDOM_SEED=2024, ablate="", extra_info="",
-                    resume="", use_lfdb=False, lfdb_weight=1.0, awgn_enable=True, awgn_min=0.0, awgn_max=30.0):
+                    resume="", use_lfdb=False, lfdb_weight=1.0, awgn_enable=True, awgn_min=0.0, awgn_max=30.0,
+                    a1_sampler=False, a1_enable=False, a1_weight=0.1, a1_temperature=0.1):
     parser = argparse.ArgumentParser()
     parser.add_argument("--encoder", "-e", type=str, default=encoder_name)
     parser.add_argument("--classifiar", "-c", type=str, default=classifiar_name)
@@ -178,6 +179,13 @@ def pretrain_config(encoder_name="ResNet18", classifiar_name="Linear", dataset_n
     parser.add_argument("--no_awgn", action="store_false", dest="awgn_enable")
     parser.add_argument("--awgn_min", type=float, default=awgn_min)
     parser.add_argument("--awgn_max", type=float, default=awgn_max)
+    parser.add_argument("--a1_sampler", action="store_true", default=a1_sampler)
+    parser.add_argument("--a1_enable", action="store_true", default=a1_enable)
+    parser.add_argument("--a1_weight", type=float, default=a1_weight)
+    parser.add_argument("--a1_temperature", type=float, default=a1_temperature)
+    parser.add_argument("--a1_identities_per_batch", type=int, default=8)
+    parser.add_argument("--a1_domains_per_identity", type=int, default=2)
+    parser.add_argument("--a1_samples_per_domain", type=int, default=2)
     parser = TSLA_add_args(parser, **({} if tsla_conf is None else tsla_conf))
     opt = parser.parse_args()
     if opt.classifiar.lower() == "linear":
@@ -198,6 +206,21 @@ def pretrain_config(encoder_name="ResNet18", classifiar_name="Linear", dataset_n
             raise ValueError("TSLA_patch must be between 2 and TSLA_len")
     if opt.awgn_min > opt.awgn_max:
         raise ValueError("awgn_min cannot be greater than awgn_max")
+    if opt.a1_enable:
+        opt.a1_sampler = True
+    a1_batch_size = (opt.a1_identities_per_batch * opt.a1_domains_per_identity
+                     * opt.a1_samples_per_domain)
+    if opt.a1_sampler:
+        if opt.dataset not in {"wisig-cross-rx", "wisig-cross-day"}:
+            raise ValueError("A1 is restricted to strict WiSig cross-domain datasets")
+        if a1_batch_size != opt.batch_size:
+            raise ValueError(
+                f"A1 structured batch size {a1_batch_size} must equal --batch_size {opt.batch_size}"
+            )
+        if opt.a1_domains_per_identity < 2:
+            raise ValueError("A1 requires at least two domains per identity")
+    if opt.a1_weight < 0 or opt.a1_temperature <= 0:
+        raise ValueError("A1 weight must be non-negative and temperature positive")
 
     loss_item = ["rot_cls", "sei_cls", "mml"]
     if opt.use_lfdb:
@@ -208,7 +231,8 @@ def pretrain_config(encoder_name="ResNet18", classifiar_name="Linear", dataset_n
         if item in loss_item:
             loss_item.remove(item)
             exp_suffix += f"_{item}Ablate"
-    exp = f"{opt.encoder}_{dataset_path_dict[opt.dataset]['name']}_{opt.input_type}_{opt.normalize_fn}Norm{exp_suffix}"
+    a1_suffix = "_A1C" if opt.a1_enable else ("_A1S" if opt.a1_sampler else "")
+    exp = f"{opt.encoder}_{dataset_path_dict[opt.dataset]['name']}_{opt.input_type}_{opt.normalize_fn}Norm{exp_suffix}{a1_suffix}"
     platform = "windows" if sys.platform.startswith("win") else "linux"
     device = "cuda" if torch.cuda.is_available() else "cpu"
     loss_item = tuple(loss_item)
@@ -242,6 +266,18 @@ def pretrain_config(encoder_name="ResNet18", classifiar_name="Linear", dataset_n
         "augmentation": {
             "awgn_enable": opt.awgn_enable,
             "awgn_snr_range": (opt.awgn_min, opt.awgn_max)
+        },
+        "a1": {
+            "sampler_enabled": opt.a1_sampler,
+            "loss_enabled": opt.a1_enable,
+            "weight": opt.a1_weight,
+            "temperature": opt.a1_temperature,
+            "domain_key": "RX" if opt.dataset == "wisig-cross-rx" else (
+                "DAY" if opt.dataset == "wisig-cross-day" else None
+            ),
+            "identities_per_batch": opt.a1_identities_per_batch,
+            "domains_per_identity": opt.a1_domains_per_identity,
+            "samples_per_domain": opt.a1_samples_per_domain,
         },
         "encoder": {
             "name": opt.encoder,

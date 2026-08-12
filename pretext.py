@@ -9,6 +9,7 @@ from torch.optim.lr_scheduler import StepLR
 from tqdm import tqdm
 
 from models.lfdb import LightweightLFDB
+from models.CrossDomainSupConLoss import CrossDomainSupConLoss
 from utils.channel_aug import add_random_awgn
 from utils.config import pretrain_config
 from utils.get_dataset import get_pretrain_dataloader
@@ -29,9 +30,10 @@ def _forward_features(encoder, inputs, labels=None, mix_lambda=None):
 
 
 def run_step(config, inputs, device, encoder, rot_classifier, mixed_classifier,
-             cls, mml, mtl, lfdb=None, training=False):
+             cls, mml, mtl, lfdb=None, a1_loss_fn=None, training=False):
     """Run all configured pretext tasks for one batch."""
-    signals, rot_labels, device_labels = inputs
+    signals, rot_labels, device_labels = inputs[:3]
+    domain_labels = inputs[3] if len(inputs) == 4 else None
     batch_size, rot_num = signals.shape[:2]
 
     rot_inputs = signals.reshape(batch_size * rot_num, *signals.shape[2:]).to(device)
@@ -103,11 +105,29 @@ def run_step(config, inputs, device, encoder, rot_classifier, mixed_classifier,
 
     ordered_losses = [losses[name] for name in config["mtl"]["item"]]
     total_loss = mtl(*ordered_losses)
-    return ordered_losses + [total_loss], metrics
+    a1_loss = None
+    if config.get("a1", {}).get("loss_enabled"):
+        if training:
+            if domain_labels is None or a1_loss_fn is None:
+                raise ValueError("A1 training requires domain labels and a loss module")
+            sample_features = get_fingerprint_features().reshape(
+                batch_size, rot_num, -1
+            ).mean(dim=1)
+            a1_loss = a1_loss_fn(
+                sample_features,
+                device_labels,
+                domain_labels.long().to(device),
+            )
+            total_loss = total_loss + config["a1"]["weight"] * a1_loss
+        else:
+            a1_loss = total_loss.new_zeros(())
+    reported_losses = ordered_losses + ([a1_loss] if a1_loss is not None else [])
+    return reported_losses + [total_loss], metrics
 
 
 def _run_epoch(logger, writer, config, epoch, dataloader, device, encoder,
                rot_classifier, mixed_classifier, cls, mml, mtl, lfdb=None,
+               a1_loss_fn=None,
                optimizers=None, schedulers=None):
     training = optimizers is not None
     modules = [encoder, rot_classifier, mixed_classifier, mtl]
@@ -117,11 +137,14 @@ def _run_epoch(logger, writer, config, epoch, dataloader, device, encoder,
         module.train(training)
 
     metric_sums = {"rot_acc": 0.0, "sei_acc": 0.0, "mixed_acc": 0.0}
-    loss_sums = [0.0] * (config["mtl"]["num"] + 1)
+    extra_loss_count = 1 if config.get("a1", {}).get("loss_enabled") else 0
+    loss_sums = [0.0] * (config["mtl"]["num"] + extra_loss_count + 1)
     split_name = "Train" if training else "Val"
 
     if training:
         logger.info(f"==> lr = {optimizers[0].param_groups[0]['lr']}")
+        if hasattr(dataloader.batch_sampler, "set_epoch"):
+            dataloader.batch_sampler.set_epoch(epoch)
 
     progress = tqdm(dataloader, desc=f"{split_name} epoch {epoch + 1}/{config['epoch']}")
     grad_context = torch.enable_grad() if training else torch.no_grad()
@@ -129,7 +152,7 @@ def _run_epoch(logger, writer, config, epoch, dataloader, device, encoder,
         for inputs in progress:
             loss_items, metrics = run_step(
                 config, inputs, device, encoder, rot_classifier, mixed_classifier,
-                cls, mml, mtl, lfdb, training=training
+                cls, mml, mtl, lfdb, a1_loss_fn, training=training
             )
             if training:
                 optimizers.zero_grad()
@@ -147,7 +170,10 @@ def _run_epoch(logger, writer, config, epoch, dataloader, device, encoder,
     count = max(len(dataloader), 1)
     metrics = {name: value / count for name, value in metric_sums.items()}
     losses = [value / count for value in loss_sums]
-    loss_names = [name.upper() for name in config["mtl"]["item"]] + ["TOTAL"]
+    loss_names = [name.upper() for name in config["mtl"]["item"]]
+    if config.get("a1", {}).get("loss_enabled"):
+        loss_names.append("A1_CONSISTENCY")
+    loss_names.append("TOTAL")
     loss_text = ", ".join(f"{name}: {value:.6f}" for name, value in zip(loss_names, losses))
     logger.info(
         f"==> {split_name} Set: Rot-Acc: {metrics['rot_acc']:.2f}%, "
@@ -195,12 +221,20 @@ def _load_checkpoint(path, device, encoder, rot_classifier, mixed_classifier,
 
 
 def train_and_val(record_time, logger, writer, config, train_dl, val_dl, device,
-                  encoder, rot_classifier, mixed_classifier, cls, mml, mtl,
-                  lfdb, optimizers, schedulers, checkpoint=None):
+                   encoder, rot_classifier, mixed_classifier, cls, mml, mtl,
+                   lfdb, a1_loss_fn, optimizers, schedulers, checkpoint=None):
     best_record = (
         deepcopy(checkpoint["best_record"])
         if checkpoint is not None and "best_record" in checkpoint
-        else {"epoch": -1, "metrics": {}, "loss": [float("inf")] * (config["mtl"]["num"] + 1)}
+        else {
+            "epoch": -1,
+            "metrics": {},
+            "loss": [float("inf")] * (
+                config["mtl"]["num"]
+                + (1 if config.get("a1", {}).get("loss_enabled") else 0)
+                + 1
+            ),
+        }
     )
 
     for epoch in range(config["start_epoch"], config["epoch"]):
@@ -211,11 +245,12 @@ def train_and_val(record_time, logger, writer, config, train_dl, val_dl, device,
         _run_epoch(
             logger, writer, config, epoch, train_dl, device, encoder,
             rot_classifier, mixed_classifier, cls, mml, mtl, lfdb,
+            a1_loss_fn,
             optimizers, schedulers
         )
         metrics, losses = _run_epoch(
             logger, writer, config, epoch, val_dl, device, encoder,
-            rot_classifier, mixed_classifier, cls, mml, mtl, lfdb
+            rot_classifier, mixed_classifier, cls, mml, mtl, lfdb, a1_loss_fn
         )
 
         if sum(losses[:-1]) < sum(best_record["loss"][:-1]):
@@ -288,6 +323,11 @@ def pretext(config=None):
     cls = torch.nn.CrossEntropyLoss()
     mml = create_model(config["mml"]["root"], beta=config["mml"]["beta"])
     mtl = create_model(config["mtl"]["root"], num=config["mtl"]["num"]).to(device)
+    a1_loss_fn = None
+    if config.get("a1", {}).get("loss_enabled"):
+        a1_loss_fn = CrossDomainSupConLoss(
+            temperature=config["a1"]["temperature"]
+        ).to(device)
 
     trainable_modules = [encoder, rot_classifier, mixed_classifier, mtl]
     if lfdb is not None:
@@ -330,7 +370,7 @@ def pretext(config=None):
     train_and_val(
         record_time, logger, writer, config, train_dataloader, val_dataloader,
         device, encoder, rot_classifier, mixed_classifier, cls, mml, mtl,
-        lfdb, optimizers, schedulers, checkpoint
+        lfdb, a1_loss_fn, optimizers, schedulers, checkpoint
     )
     writer.close()
 
