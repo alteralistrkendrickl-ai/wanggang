@@ -5,7 +5,12 @@ from types import SimpleNamespace
 
 import numpy as np
 
-from wisig_validate_lr import make_config, recover_log_rows, sample_support
+from wisig_validate_lr import (
+    evaluate_lr_jobs,
+    make_config,
+    recover_log_rows,
+    sample_support,
+)
 
 
 class WiSigValidationLRTest(unittest.TestCase):
@@ -54,6 +59,19 @@ class WiSigValidationLRTest(unittest.TestCase):
         self.assertEqual(len(rows), 2)
         self.assertEqual((rows[0]["shot"], rows[0]["iteration"]), (1, 1))
         self.assertEqual(rows[1]["accuracy"], "55.25000000")
+
+    def test_parallel_lr_matches_serial_lr(self):
+        rng = np.random.default_rng(2024)
+        query_features = rng.normal(size=(90, 8)).astype(np.float32)
+        query_labels = np.repeat(np.arange(3), 30)
+        jobs = []
+        for iteration, seed in enumerate((2024, 2025, 2026), start=1):
+            features = rng.normal(size=(30, 8)).astype(np.float32)
+            labels = np.repeat(np.arange(3), 10)
+            jobs.append(((1, iteration), features, labels, seed))
+        serial = evaluate_lr_jobs(jobs, query_features, query_labels, workers=1)
+        parallel = evaluate_lr_jobs(jobs, query_features, query_labels, workers=2)
+        self.assertEqual(serial, parallel)
 
 
 if __name__ == "__main__":

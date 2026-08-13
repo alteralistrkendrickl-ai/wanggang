@@ -13,6 +13,7 @@ import math
 import os
 import random
 import re
+from concurrent.futures import ProcessPoolExecutor, as_completed
 from pathlib import Path
 
 import numpy as np
@@ -50,6 +51,10 @@ def parse_args():
     parser.add_argument("--support-batch-size", type=int, default=256)
     parser.add_argument("--query-batch-size", type=int, default=256)
     parser.add_argument("--device", choices=("auto", "cpu", "cuda"), default="auto")
+    parser.add_argument(
+        "--lr-workers", type=int, default=1,
+        help="Parallel CPU workers for independent LR fits; 1 preserves serial execution.",
+    )
     parser.add_argument("--output-dir", default="runs/WiSig_validation_lr")
     parser.add_argument(
         "--resume-log",
@@ -176,6 +181,45 @@ def extract_features(encoder, dataloader, device, description):
             features.append(encoder(inputs.to(device, non_blocking=True)).cpu().numpy())
             labels.append(targets.numpy())
     return np.concatenate(features), np.concatenate(labels)
+
+
+_WORKER_QUERY_FEATURES = None
+_WORKER_QUERY_LABELS = None
+
+
+def _init_lr_worker(query_features, query_labels):
+    global _WORKER_QUERY_FEATURES, _WORKER_QUERY_LABELS
+    _WORKER_QUERY_FEATURES = query_features
+    _WORKER_QUERY_LABELS = query_labels
+
+
+def fit_and_score_lr(support_features, support_labels, seed):
+    classifier = LogisticRegression(max_iter=1000, random_state=seed)
+    classifier.fit(support_features, support_labels)
+    return float(classifier.score(_WORKER_QUERY_FEATURES, _WORKER_QUERY_LABELS) * 100.0)
+
+
+def evaluate_lr_jobs(jobs, query_features, query_labels, workers):
+    """Evaluate independent LR jobs without changing classifier semantics."""
+    if workers == 1:
+        _init_lr_worker(query_features, query_labels)
+        return {
+            key: fit_and_score_lr(features, labels, seed)
+            for key, features, labels, seed in jobs
+        }
+    results = {}
+    with ProcessPoolExecutor(
+        max_workers=workers,
+        initializer=_init_lr_worker,
+        initargs=(query_features, query_labels),
+    ) as executor:
+        futures = {
+            executor.submit(fit_and_score_lr, features, labels, seed): key
+            for key, features, labels, seed in jobs
+        }
+        for future in as_completed(futures):
+            results[futures[future]] = future.result()
+    return results
 
 
 def write_csv(path, fieldnames, rows):
@@ -336,6 +380,8 @@ def main():
         raise ValueError("iterations must be positive")
     if not args.shots or any(shot < 1 for shot in args.shots):
         raise ValueError("shots must contain positive integers")
+    if args.lr_workers < 1:
+        raise ValueError("lr-workers must be positive")
 
     device = resolve_device(args.device)
     checkpoint_path = resolve_checkpoint(args)
@@ -390,8 +436,10 @@ def main():
     print(f"DEVICE={device}")
     print(f"QUERY_SAMPLES={len(query_labels)}")
     print(f"RECOVERED_ITERATIONS={len(detail_rows)}")
+    print(f"LR_WORKERS={args.lr_workers}")
 
     for shot in args.shots:
+        jobs = []
         for iteration in range(args.iterations):
             iteration_number = iteration + 1
             if (shot, iteration_number) in completed:
@@ -410,9 +458,15 @@ def main():
                 device,
                 f"{shot}-shot iteration {iteration + 1}/{args.iterations}",
             )
-            classifier = LogisticRegression(max_iter=1000, random_state=seed)
-            classifier.fit(support_features, support_labels)
-            accuracy = float(classifier.score(query_features, query_labels) * 100.0)
+            jobs.append(((shot, iteration_number), support_features, support_labels, seed))
+
+        accuracies = evaluate_lr_jobs(
+            jobs, query_features, query_labels, args.lr_workers
+        ) if jobs else {}
+        for shot_iteration in sorted(accuracies):
+            _, iteration_number = shot_iteration
+            seed = args.base_seed + iteration_number - 1
+            accuracy = accuracies[shot_iteration]
             detail_rows.append(
                 {
                     "protocol": args.protocol,
