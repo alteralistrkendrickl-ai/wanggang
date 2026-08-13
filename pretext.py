@@ -363,6 +363,16 @@ def pretext(config=None):
         )
         config["start_epoch"] = checkpoint["epoch"] + 1
         logger.info(f"==> Resumed checkpoint: {resume_path}")
+        # A resumed run receives a fresh timestamp directory.  If the current
+        # checkpoint epoch is also the recorded best epoch, seed that directory
+        # with the matching encoder so a later non-improving epoch cannot leave
+        # the resumed experiment without best_encoder.pth.
+        if checkpoint.get("best_record", {}).get("epoch") == checkpoint.get("epoch"):
+            torch.save(
+                encoder.state_dict(),
+                os.path.join(config["exp_path"], "best_encoder.pth"),
+            )
+            logger.info("==> Restored current best encoder into the resumed run directory.")
     else:
         config["start_epoch"] = 0
 
