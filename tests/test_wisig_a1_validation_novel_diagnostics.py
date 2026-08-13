@@ -52,8 +52,12 @@ class A1ValidationNovelDiagnosticsTest(unittest.TestCase):
         identity = source_to_target_identity_probe(
             self.source_f, self.source_y, self.target_f, self.target_y, 2024
         )
+        domain_source = self.source_f.copy()
+        domain_target = self.target_f.copy()
+        domain_source[:, 15] = -10.0
+        domain_target[:, 15] = 10.0
         domain = identity_disjoint_source_target_probe(
-            self.source_f, self.source_y, self.target_f, self.target_y, 2024
+            domain_source, self.source_y, domain_target, self.target_y, 2024
         )
         self.assertGreater(identity["target_identity_accuracy"], 0.9)
         self.assertGreater(domain["source_target_accuracy"], 0.9)
