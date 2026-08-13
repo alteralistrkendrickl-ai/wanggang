@@ -21,16 +21,18 @@ class A1ValidationNovelDiagnosticsTest(unittest.TestCase):
                     vector = np.zeros(16, dtype=np.float32)
                     vector[identity] = 4.0
                     vector[6 + domain] = 0.5
-                    vector[15] = -3.0
                     source_y.append(identity); source_d.append(domain)
-                    source_f.append(vector + rng.normal(0, 0.03, 16))
+                    sample = vector + rng.normal(0, 0.03, 16)
+                    sample[15] = -1.0
+                    source_f.append(sample)
             for _ in range(12):
                 vector = np.zeros(16, dtype=np.float32)
                 vector[identity] = 4.0
                 vector[10] = 0.5
-                vector[15] = 3.0
                 target_y.append(identity)
-                target_f.append(vector + rng.normal(0, 0.03, 16))
+                sample = vector + rng.normal(0, 0.03, 16)
+                sample[15] = 1.0
+                target_f.append(sample)
         self.source_y = np.asarray(source_y)
         self.source_d = np.asarray(source_d)
         self.source_f = np.asarray(source_f, dtype=np.float32)
