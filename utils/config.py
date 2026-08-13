@@ -186,6 +186,10 @@ def pretrain_config(encoder_name="ResNet18", classifiar_name="Linear", dataset_n
     parser.add_argument("--a1_identities_per_batch", type=int, default=8)
     parser.add_argument("--a1_domains_per_identity", type=int, default=2)
     parser.add_argument("--a1_samples_per_domain", type=int, default=2)
+    parser.add_argument(
+        "--run_tag", type=str, default="",
+        help="Optional filesystem-safe suffix used to isolate an experiment run.",
+    )
     parser = TSLA_add_args(parser, **({} if tsla_conf is None else tsla_conf))
     opt = parser.parse_args()
     if opt.classifiar.lower() == "linear":
@@ -221,6 +225,8 @@ def pretrain_config(encoder_name="ResNet18", classifiar_name="Linear", dataset_n
             raise ValueError("A1 requires at least two domains per identity")
     if opt.a1_weight < 0 or opt.a1_temperature <= 0:
         raise ValueError("A1 weight must be non-negative and temperature positive")
+    if opt.run_tag and (not opt.run_tag.replace("-", "").replace("_", "").isalnum()):
+        raise ValueError("run_tag may contain only letters, digits, hyphens, and underscores")
 
     loss_item = ["rot_cls", "sei_cls", "mml"]
     if opt.use_lfdb:
@@ -242,7 +248,8 @@ def pretrain_config(encoder_name="ResNet18", classifiar_name="Linear", dataset_n
             a1_suffix = f"_A1C_w{weight_tag}_t{temperature_tag}"
     else:
         a1_suffix = "_A1S" if opt.a1_sampler else ""
-    exp = f"{opt.encoder}_{dataset_path_dict[opt.dataset]['name']}_{opt.input_type}_{opt.normalize_fn}Norm{exp_suffix}{a1_suffix}"
+    run_suffix = f"_{opt.run_tag}" if opt.run_tag else ""
+    exp = f"{opt.encoder}_{dataset_path_dict[opt.dataset]['name']}_{opt.input_type}_{opt.normalize_fn}Norm{exp_suffix}{a1_suffix}{run_suffix}"
     platform = "windows" if sys.platform.startswith("win") else "linux"
     device = "cuda" if torch.cuda.is_available() else "cpu"
     loss_item = tuple(loss_item)
