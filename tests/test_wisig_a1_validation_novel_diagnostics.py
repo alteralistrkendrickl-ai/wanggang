@@ -52,10 +52,10 @@ class A1ValidationNovelDiagnosticsTest(unittest.TestCase):
         identity = source_to_target_identity_probe(
             self.source_f, self.source_y, self.target_f, self.target_y, 2024
         )
-        domain_source = self.source_f.copy()
-        domain_target = self.target_f.copy()
-        domain_source[:, 15] = -10.0
-        domain_target[:, 15] = 10.0
+        domain_source = np.zeros((len(self.source_f), 2), dtype=np.float32)
+        domain_target = np.zeros((len(self.target_f), 2), dtype=np.float32)
+        domain_source[:, 0] = -1.0
+        domain_target[:, 0] = 1.0
         domain = identity_disjoint_source_target_probe(
             domain_source, self.source_y, domain_target, self.target_y, 2024
         )
