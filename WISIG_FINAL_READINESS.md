@@ -23,6 +23,12 @@ This command does **not** load final arrays, does **not** run a model, and does
 **not** authorize final unsealing.  The current `wisig_final_evaluate.py` remains
 stale and must not be run.
 
+After this validation-evidence audit passes, `wisig_final_matrix_prepare.py`
+performs the next read-only stage.  It verifies the exact readiness-report hash,
+rehashes all 20 checkpoints, and hashes the eight final NPY files as opaque
+bytes.  It writes `FROZEN_MANIFEST_DRAFT.json`, while keeping `RUN_ENABLED=False`.
+It neither imports NumPy nor contains an array loader.
+
 Expected server runtime: about 10--60 seconds, dominated by hashing 20 encoder
 checkpoints.
 
