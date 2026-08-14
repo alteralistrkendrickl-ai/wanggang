@@ -48,6 +48,12 @@ def parse_args():
     parser.add_argument("--iterations", type=int, default=100)
     parser.add_argument("--base-seed", type=int, default=2024)
     parser.add_argument("--feature-dim", type=int, default=1024)
+    parser.add_argument(
+        "--encoder",
+        choices=("cvtslanet", "fssei-stc"),
+        default="cvtslanet",
+        help="Encoder architecture. fssei-stc is the length-adapted public FS-SEI baseline.",
+    )
     parser.add_argument("--support-batch-size", type=int, default=256)
     parser.add_argument("--query-batch-size", type=int, default=256)
     parser.add_argument("--device", choices=("auto", "cpu", "cuda"), default="auto")
@@ -75,6 +81,8 @@ def resolve_device(requested):
 def resolve_checkpoint(args):
     if args.checkpoint_path:
         return Path(args.checkpoint_path).expanduser().resolve()
+    if args.encoder == "fssei-stc":
+        raise ValueError("--checkpoint-path is required for --encoder fssei-stc")
     base_key = f"wisig-{args.protocol}"
     pretrain_name = dataset_path_dict[base_key]["name"]
     experiment = f"CVTSLANet_{pretrain_name}_iq_powerNorm"
@@ -389,12 +397,17 @@ def main():
         raise FileNotFoundError(f"Checkpoint not found: {checkpoint_path}")
 
     set_seed(args.base_seed)
-    encoder = create_model(
-        model_path_dict["CVTSLANet"],
-        feature_dim=args.feature_dim,
-        dtype="iq",
-        **TSLA_CONFIG,
-    )
+    if args.encoder == "fssei-stc":
+        encoder_root = Path(__file__).resolve().parent / "models" / "FSSEISTCFeature.py"
+        encoder_kwargs = {"feature_dim": args.feature_dim, "dtype": "iq"}
+    else:
+        encoder_root = model_path_dict["CVTSLANet"]
+        encoder_kwargs = {
+            "feature_dim": args.feature_dim,
+            "dtype": "iq",
+            **TSLA_CONFIG,
+        }
+    encoder = create_model(str(encoder_root), **encoder_kwargs)
     load_encoder_weights(encoder, str(checkpoint_path), device)
     encoder = encoder.to(device)
 
@@ -433,6 +446,7 @@ def main():
     print(f"DATASET_ROOT={query_config['dataset']['root']}")
     print(f"CHECKPOINT={checkpoint_path}")
     print(f"CHECKPOINT_SHA256={checkpoint_hash}")
+    print(f"ENCODER={args.encoder}")
     print(f"DEVICE={device}")
     print(f"QUERY_SAMPLES={len(query_labels)}")
     print(f"RECOVERED_ITERATIONS={len(detail_rows)}")
