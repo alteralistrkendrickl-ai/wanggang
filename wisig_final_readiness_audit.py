@@ -36,6 +36,11 @@ def parse_args():
     )
     parser.add_argument("--project-root", default=str(Path(__file__).resolve().parent))
     parser.add_argument(
+        "--baseline-2024-root",
+        default="",
+        help="Root containing the frozen seed-2024 B0 checkpoints and validation CSVs",
+    )
+    parser.add_argument(
         "--validation-dir", action="append", default=[],
         help="Validation result root; repeat to override the three frozen defaults",
     )
@@ -62,20 +67,24 @@ def experiment_name(protocol, variant, train_seed):
     )
 
 
-def expected_models(project_root):
+def expected_models(project_root, baseline_2024_root):
     models = []
-    base = project_root / "runs" / "Pretext_random_rot"
     for protocol, variants in PROTOCOL_VARIANTS.items():
         for train_seed in TRAIN_SEEDS:
             for variant in variants:
                 name = experiment_name(protocol, variant, train_seed)
+                checkpoint_root = project_root
+                if train_seed == 2024 and variant == "B0":
+                    checkpoint_root = baseline_2024_root
+                    name = f"CVTSLANet_wisig-{protocol}_iq_powerNorm"
                 models.append(
                     {
                         "protocol": protocol,
                         "variant": variant,
                         "train_seed": train_seed,
                         "experiment_name": name,
-                        "checkpoint": base / name / "best_encoder.pth",
+                        "checkpoint": checkpoint_root / "runs" /
+                        "Pretext_random_rot" / name / "best_encoder.pth",
                     }
                 )
     return models
@@ -160,7 +169,7 @@ def aggregate_differences(results):
     return summaries
 
 
-def audit(project_root, validation_dirs):
+def audit(project_root, baseline_2024_root, validation_dirs):
     csv_paths = discover_csvs(validation_dirs)
     csv_by_key = defaultdict(list)
     for path in csv_paths:
@@ -172,7 +181,7 @@ def audit(project_root, validation_dirs):
 
     model_records = []
     results = {}
-    for model in expected_models(project_root):
+    for model in expected_models(project_root, baseline_2024_root):
         checkpoint = model["checkpoint"]
         if not checkpoint.is_file():
             raise FileNotFoundError(f"Checkpoint missing: {checkpoint}")
@@ -228,11 +237,18 @@ def audit(project_root, validation_dirs):
 def main():
     args = parse_args()
     project_root = Path(args.project_root).expanduser().resolve()
+    if args.baseline_2024_root:
+        baseline_2024_root = Path(args.baseline_2024_root).expanduser().resolve()
+    else:
+        baseline_2024_root = project_root.parent / "wanggang_wisig_audit"
     if args.validation_dir:
         validation_dirs = [Path(path).expanduser().resolve() for path in args.validation_dir]
     else:
         validation_dirs = [project_root / path for path in DEFAULT_VALIDATION_DIRS]
-    report = audit(project_root, validation_dirs)
+        validation_dirs.append(
+            baseline_2024_root / "runs" / "WiSig_validation_lr_100runs"
+        )
+    report = audit(project_root, baseline_2024_root, validation_dirs)
     output = Path(args.output).expanduser()
     if not output.is_absolute():
         output = project_root / output

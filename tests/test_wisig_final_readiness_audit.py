@@ -1,10 +1,10 @@
-import tempfile
 import unittest
 from pathlib import Path
 
 from wisig_final_readiness_audit import (
     SHOTS,
     aggregate_differences,
+    expected_models,
     experiment_name,
     validate_rows,
 )
@@ -23,6 +23,24 @@ class WiSigFinalReadinessAuditTest(unittest.TestCase):
         self.assertEqual(
             experiment_name("cross-day", "A1S", 2027),
             "CVTSLANet_wisig-cross-day_iq_powerNorm_A1S_fair10e_seed2027",
+        )
+
+    def test_seed_2024_b0_uses_separate_frozen_baseline_root(self):
+        project = Path("/fair")
+        baseline = Path("/audit")
+        models = expected_models(project, baseline)
+        self.assertEqual(len(models), 20)
+        item = next(
+            row for row in models
+            if row["protocol"] == "cross-rx"
+            and row["variant"] == "B0"
+            and row["train_seed"] == 2024
+        )
+        self.assertEqual(item["experiment_name"], "CVTSLANet_wisig-cross-rx_iq_powerNorm")
+        self.assertEqual(
+            item["checkpoint"],
+            baseline / "runs" / "Pretext_random_rot" /
+            "CVTSLANet_wisig-cross-rx_iq_powerNorm" / "best_encoder.pth",
         )
 
     def test_validation_grid_is_strict_and_complete(self):

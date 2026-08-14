@@ -14,6 +14,11 @@ incorrect roles, protocols, checkpoint hashes, and seed schedules.  Differences
 are paired by support-set seed and summarized with training seed as the
 statistical unit.
 
+The frozen seed-2024 B0 artifacts live in the sibling `wanggang_wisig_audit`
+project, whereas A1 and the 2025--2028 training-seed artifacts live in
+`wanggang_wisig_a1_fair`.  The audit treats these roots explicitly; it does not
+silently copy or rename checkpoints.
+
 This command does **not** load final arrays, does **not** run a model, and does
 **not** authorize final unsealing.  The current `wisig_final_evaluate.py` remains
 stale and must not be run.
@@ -22,5 +27,7 @@ Expected server runtime: about 10--60 seconds, dominated by hashing 20 encoder
 checkpoints.
 
 ```bash
-python wisig_final_readiness_audit.py
+python wisig_final_readiness_audit.py \
+  --project-root /home/yuanlong/yl/wanggang_wisig_a1_fair \
+  --baseline-2024-root /home/yuanlong/yl/wanggang_wisig_audit
 ```
