@@ -22,7 +22,7 @@ DRAFT_PATH = Path(
 )
 DRAFT_FILE_SHA256 = "542900a28a80ef20bdf07583f4a76932c5f36889dfd8d50ea3a571fa750c4c4f"
 DRAFT_CANONICAL_SHA256 = "f763179fb4fcdf6569bdbc3f620bd7c239a1520d8892572b9415f3889d89c5df"
-EXPECTED_FROZEN_MANIFEST_SHA256 = "44fa7befb480889e99d0b9c8d41366f0853b452ff56460e60863010b49776639"
+EXPECTED_FROZEN_MANIFEST_SHA256 = "38cf770fe266a00589949cc864e7384059d8611d735a757f137fc88e383c8c09"
 CONFIRM_TOKEN = "UNSEAL-WISIG-FINAL-PAIRED-MATRIX-V2"
 PROTOCOLS = ("cross-rx", "cross-day")
 SHOTS = (1, 5, 10, 15, 20)
@@ -32,6 +32,31 @@ SUPPORT_BASE_SEED = 2024
 NUM_CLASSES = 30
 EXPECTED_ROWS_PER_PROTOCOL = 5000
 T_CRITICAL_DF4_95 = 2.7764451051977987
+FROZEN_OUTPUT_DIR = Path(
+    "/home/yuanlong/yl/wanggang_wisig_final_readiness/runs/"
+    "WiSig_final_paired_matrix_v2"
+)
+GLOBAL_UNSEAL_LOCK = Path(
+    "/home/yuanlong/yl/wanggang_wisig_final_readiness/runs/"
+    "WiSig_final_paired_matrix_v2_UNSEAL_MANIFEST.json"
+)
+FROZEN_RUNTIME = {
+    "device": "cuda",
+    "batch_size": 256,
+    "lr_workers": 3,
+    "output_dir": str(FROZEN_OUTPUT_DIR),
+    "global_unseal_lock": str(GLOBAL_UNSEAL_LOCK),
+    "protocol_order": list(PROTOCOLS),
+}
+STATISTICAL_PLAN = {
+    "primary_estimand": "macro_average_candidate_minus_b0_over_five_shots",
+    "primary_unit": "train_seed",
+    "primary_family": "two_protocol_endpoints_holm_two_sided_alpha_0.05",
+    "secondary_estimand": "candidate_minus_b0_for_each_shot",
+    "secondary_families": "five_shots_within_each_protocol_holm_two_sided_alpha_0.05",
+    "support_seed_pairing": True,
+    "report_all_protocols_and_shots": True,
+}
 
 DETAIL_FIELDS = (
     "protocol", "role", "variant", "train_seed", "checkpoint_sha256",
@@ -43,7 +68,16 @@ MODEL_SUMMARY_FIELDS = (
 )
 PAIRED_SUMMARY_FIELDS = (
     "protocol", "candidate", "shot", "train_seeds", "mean_difference",
-    "ci95_low", "ci95_high", "positive_train_seeds",
+    "ci95_low", "ci95_high", "raw_p", "holm_adjusted_p", "holm_reject",
+    "positive_train_seeds",
+)
+PRIMARY_SUMMARY_FIELDS = (
+    "protocol", "candidate", "estimand", "train_seeds", "mean_difference",
+    "ci95_low", "ci95_high", "raw_p", "holm_adjusted_p", "holm_reject",
+    "positive_train_seeds",
+)
+TRAIN_SEED_EFFECT_FIELDS = (
+    "protocol", "candidate", "train_seed", "shot", "mean_difference",
 )
 
 
@@ -52,10 +86,6 @@ def parse_args():
     parser.add_argument("--mode", choices=("audit", "run"), default="audit")
     parser.add_argument("--confirm", default="")
     parser.add_argument("--resume", action="store_true")
-    parser.add_argument("--device", choices=("auto", "cpu", "cuda"), default="auto")
-    parser.add_argument("--batch-size", type=int, default=256)
-    parser.add_argument("--lr-workers", type=int, default=3)
-    parser.add_argument("--output-dir", default="runs/WiSig_final_paired_matrix_v2")
     return parser.parse_args()
 
 
@@ -103,6 +133,8 @@ def load_and_freeze_draft(path=DRAFT_PATH, verify_file=True):
         "file_sha256": DRAFT_FILE_SHA256,
         "canonical_sha256": DRAFT_CANONICAL_SHA256,
     }
+    manifest["runtime_contract"] = FROZEN_RUNTIME
+    manifest["statistical_plan"] = STATISTICAL_PLAN
     return manifest
 
 
@@ -121,6 +153,10 @@ def validate_frozen_structure(manifest):
         raise RuntimeError("Frozen support seed changed")
     if manifest.get("expected_rows_per_protocol") != EXPECTED_ROWS_PER_PROTOCOL:
         raise RuntimeError("Frozen row count changed")
+    if manifest.get("runtime_contract") != FROZEN_RUNTIME:
+        raise RuntimeError("Frozen runtime contract changed")
+    if manifest.get("statistical_plan") != STATISTICAL_PLAN:
+        raise RuntimeError("Frozen statistical plan changed")
     if len(manifest.get("models", ())) != 20:
         raise RuntimeError("Frozen manifest must contain 20 models")
     if len(manifest.get("data_files", ())) != 8:
@@ -139,6 +175,18 @@ def validate_frozen_structure(manifest):
     }
     if set(model_keys) != expected_keys:
         raise RuntimeError("Frozen model grid is incomplete")
+    data_keys = [
+        (row["protocol"], row["split"], row["kind"])
+        for row in manifest["data_files"]
+    ]
+    expected_data_keys = {
+        (protocol, split, kind)
+        for protocol in PROTOCOLS
+        for split in ("train", "test")
+        for kind in ("X", "Y")
+    }
+    if len(data_keys) != len(set(data_keys)) or set(data_keys) != expected_data_keys:
+        raise RuntimeError("Frozen final data-file grid is not exact")
 
 
 def audit_frozen_files(manifest, compute_hashes=True):
@@ -159,16 +207,113 @@ def audit_frozen_files(manifest, compute_hashes=True):
             raise RuntimeError(f"Final file hash mismatch: {path}")
 
 
-def acquire_or_resume(output_dir, manifest, resume):
-    output_dir.mkdir(parents=True, exist_ok=True)
-    lock_path = output_dir / "UNSEAL_MANIFEST.json"
+def _require_equal(actual, expected, label):
+    if actual != expected:
+        raise RuntimeError(
+            f"Training provenance mismatch for {label}: "
+            f"expected {expected!r}, got {actual!r}"
+        )
+
+
+def validate_training_config(config, protocol, variant, train_seed):
+    expected_domain = {"cross-rx": "RX", "cross-day": "DAY"}[protocol]
+    expected_a1 = {
+        "B0": (False, False),
+        "A1S": (True, False),
+        "A1C": (True, True),
+    }[variant]
+    checks = {
+        "random_seed": (config.get("random_seed"), train_seed),
+        "epoch": (config.get("epoch"), 10),
+        "threshold": (config.get("threshold"), 0),
+        "dataset.name": (config.get("dataset", {}).get("name"), f"wisig-{protocol}"),
+        "dataset.type": (config.get("dataset", {}).get("type"), "iq"),
+        "dataset.normalize": (config.get("dataset", {}).get("normalize"), "power"),
+        "dataset.batch_size": (config.get("dataset", {}).get("batch_size"), 32),
+        "dataset.signal_length": (
+            config.get("dataset", {}).get("signal_length"), 256
+        ),
+        "augmentation.awgn_enable": (
+            config.get("augmentation", {}).get("awgn_enable"), False
+        ),
+        "encoder.name": (config.get("encoder", {}).get("name"), "CVTSLANet"),
+        "encoder.feature_dim": (config.get("encoder", {}).get("feature_dim"), 1024),
+        "encoder.seq_len": (
+            config.get("encoder", {}).get("TSLA_config", {}).get("seq_len"), 256
+        ),
+        "encoder.patch_size": (
+            config.get("encoder", {}).get("TSLA_config", {}).get("patch_size"), 32
+        ),
+        "lfdb.enabled": (config.get("lfdb", {}).get("enabled"), False),
+        "a1.sampler_enabled": (
+            config.get("a1", {}).get("sampler_enabled"), expected_a1[0]
+        ),
+        "a1.loss_enabled": (
+            config.get("a1", {}).get("loss_enabled"), expected_a1[1]
+        ),
+        "a1.domain_key": (config.get("a1", {}).get("domain_key"), expected_domain),
+    }
+    if variant == "A1C":
+        checks.update({
+            "a1.weight": (config.get("a1", {}).get("weight"), 0.1),
+            "a1.temperature": (config.get("a1", {}).get("temperature"), 0.1),
+        })
+    for label, (actual, expected) in checks.items():
+        _require_equal(actual, expected, f"{protocol}/{variant}/seed{train_seed}/{label}")
+
+
+def audit_training_provenance(manifest):
+    import torch
+
+    evidence = []
+    for model in manifest["models"]:
+        protocol = model["protocol"]
+        variant = model["variant"]
+        train_seed = int(model["train_seed"])
+        checkpoint_path = Path(model["checkpoint"]).with_name("checkpoint.pth")
+        if not checkpoint_path.is_file():
+            raise FileNotFoundError(
+                f"Training provenance checkpoint is missing: {checkpoint_path}"
+            )
+        try:
+            checkpoint = torch.load(
+                checkpoint_path, map_location="cpu", weights_only=False
+            )
+        except TypeError:
+            checkpoint = torch.load(checkpoint_path, map_location="cpu")
+        config = checkpoint.get("config") if isinstance(checkpoint, dict) else None
+        if not isinstance(config, dict):
+            raise RuntimeError(
+                f"Training checkpoint has no auditable config: {checkpoint_path}"
+            )
+        validate_training_config(config, protocol, variant, train_seed)
+        evidence.append({
+            "protocol": protocol,
+            "variant": variant,
+            "train_seed": train_seed,
+            "training_checkpoint": str(checkpoint_path),
+            "training_checkpoint_sha256": sha256(checkpoint_path),
+        })
+        del checkpoint
+    return evidence
+
+
+def acquire_or_resume(lock_path, manifest, runtime_contract, resume):
+    lock_path = Path(lock_path)
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
     manifest_hash = canonical_hash(manifest)
     if manifest_hash != EXPECTED_FROZEN_MANIFEST_SHA256:
         raise RuntimeError(
             f"Frozen manifest hash mismatch: expected {EXPECTED_FROZEN_MANIFEST_SHA256}, "
             f"got {manifest_hash}"
         )
-    record = {"manifest_sha256": manifest_hash, "manifest": manifest}
+    if runtime_contract != FROZEN_RUNTIME:
+        raise RuntimeError("Runtime contract differs from the code-frozen contract")
+    record = {
+        "manifest_sha256": manifest_hash,
+        "manifest": manifest,
+        "runtime_contract": runtime_contract,
+    }
     if resume:
         if not lock_path.is_file():
             raise RuntimeError("Cannot resume: UNSEAL_MANIFEST.json does not exist")
@@ -209,6 +354,16 @@ def model_lookup(manifest):
     }
 
 
+def validate_accuracy(value, label="accuracy"):
+    try:
+        accuracy = float(value)
+    except (TypeError, ValueError) as error:
+        raise RuntimeError(f"{label} is not numeric: {value!r}") from error
+    if not math.isfinite(accuracy) or not 0.0 <= accuracy <= 100.0:
+        raise RuntimeError(f"{label} is outside finite [0, 100]: {value!r}")
+    return accuracy
+
+
 def load_existing_rows(path, protocol, manifest):
     if not path.is_file():
         return []
@@ -216,7 +371,10 @@ def load_existing_rows(path, protocol, manifest):
     expected_keys = expected_row_keys(protocol, manifest)
     rows, seen = [], set()
     with path.open("r", newline="", encoding="utf-8-sig") as handle:
-        for row in csv.DictReader(handle):
+        reader = csv.DictReader(handle)
+        if tuple(reader.fieldnames or ()) != DETAIL_FIELDS:
+            raise RuntimeError("Existing final CSV schema differs from the frozen schema")
+        for row in reader:
             key = (
                 row["variant"], int(row["train_seed"]),
                 int(row["shot"]), int(row["iteration"]),
@@ -233,6 +391,9 @@ def load_existing_rows(path, protocol, manifest):
             model = models[(protocol, row["variant"], int(row["train_seed"]))]
             if row["checkpoint_sha256"] != model["checkpoint_sha256"]:
                 raise RuntimeError(f"Existing checkpoint mismatch: {key}")
+            validate_accuracy(row["accuracy"], f"Existing accuracy for {key}")
+            if row["source"] != "computed":
+                raise RuntimeError(f"Existing row has unexpected source: {key}")
             rows.append(row)
             seen.add(key)
     return rows
@@ -245,6 +406,16 @@ def atomic_write_csv(path, fieldnames, rows):
         writer = csv.DictWriter(handle, fieldnames=fieldnames)
         writer.writeheader()
         writer.writerows(rows)
+        handle.flush()
+        os.fsync(handle.fileno())
+    temporary.replace(path)
+
+
+def atomic_write_json(path, payload):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_suffix(path.suffix + ".tmp")
+    with temporary.open("w", encoding="utf-8") as handle:
+        json.dump(payload, handle, indent=2, sort_keys=True)
         handle.flush()
         os.fsync(handle.fileno())
     temporary.replace(path)
@@ -275,33 +446,191 @@ def model_summaries(rows):
     return summaries
 
 
-def paired_summaries(rows, manifest):
+def train_seed_effects(rows, manifest):
     by_key = {
         (row["protocol"], row["variant"], int(row["train_seed"]),
          int(row["shot"]), int(row["iteration"])): float(row["accuracy"])
         for row in rows
     }
-    output = []
+    effects = []
     for protocol, variants in manifest["protocol_variants"].items():
         baseline, candidate = variants
-        for shot in SHOTS:
-            differences = []
-            for train_seed in TRAIN_SEEDS:
+        for train_seed in TRAIN_SEEDS:
+            for shot in SHOTS:
                 paired = [
                     by_key[(protocol, candidate, train_seed, shot, iteration)]
                     - by_key[(protocol, baseline, train_seed, shot, iteration)]
                     for iteration in range(1, ITERATIONS + 1)
                 ]
-                differences.append(statistics.mean(paired))
-            mean = statistics.mean(differences)
-            half = T_CRITICAL_DF4_95 * statistics.stdev(differences) / math.sqrt(5)
+                effects.append({
+                    "protocol": protocol,
+                    "candidate": candidate,
+                    "train_seed": train_seed,
+                    "shot": shot,
+                    "mean_difference": f"{statistics.mean(paired):.8f}",
+                })
+    return effects
+
+
+def _regularized_incomplete_beta(x, a, b):
+    """Numerically stable regularized incomplete beta without SciPy."""
+    if not 0.0 <= x <= 1.0 or a <= 0.0 or b <= 0.0:
+        raise ValueError("Invalid incomplete-beta arguments")
+    if x in (0.0, 1.0):
+        return x
+
+    def continued_fraction(aa, bb, xx):
+        max_iterations, epsilon, floor = 200, 3.0e-14, 1.0e-300
+        qab, qap, qam = aa + bb, aa + 1.0, aa - 1.0
+        c = 1.0
+        d = 1.0 - qab * xx / qap
+        d = 1.0 / (floor if abs(d) < floor else d)
+        result = d
+        for iteration in range(1, max_iterations + 1):
+            twice = 2 * iteration
+            coefficient = (
+                iteration * (bb - iteration) * xx
+                / ((qam + twice) * (aa + twice))
+            )
+            d = 1.0 + coefficient * d
+            d = floor if abs(d) < floor else d
+            c = 1.0 + coefficient / c
+            c = floor if abs(c) < floor else c
+            d = 1.0 / d
+            result *= d * c
+            coefficient = -(
+                (aa + iteration) * (qab + iteration) * xx
+                / ((aa + twice) * (qap + twice))
+            )
+            d = 1.0 + coefficient * d
+            d = floor if abs(d) < floor else d
+            c = 1.0 + coefficient / c
+            c = floor if abs(c) < floor else c
+            d = 1.0 / d
+            delta = d * c
+            result *= delta
+            if abs(delta - 1.0) <= epsilon:
+                return result
+        raise RuntimeError("Incomplete-beta continued fraction did not converge")
+
+    front = math.exp(
+        math.lgamma(a + b) - math.lgamma(a) - math.lgamma(b)
+        + a * math.log(x) + b * math.log1p(-x)
+    )
+    if x < (a + 1.0) / (a + b + 2.0):
+        return front * continued_fraction(a, b, x) / a
+    return 1.0 - front * continued_fraction(b, a, 1.0 - x) / b
+
+
+def _two_sided_t_pvalue(t_statistic, degrees_of_freedom):
+    if degrees_of_freedom <= 0 or not math.isfinite(t_statistic):
+        if math.isinf(t_statistic) and degrees_of_freedom > 0:
+            return 0.0
+        raise ValueError("Invalid t-test arguments")
+    x = degrees_of_freedom / (degrees_of_freedom + t_statistic ** 2)
+    return _regularized_incomplete_beta(x, degrees_of_freedom / 2.0, 0.5)
+
+
+def _effect_summary(values):
+
+    values = [float(value) for value in values]
+    mean = statistics.mean(values)
+    std = statistics.stdev(values)
+    half = T_CRITICAL_DF4_95 * std / math.sqrt(len(values))
+    if std == 0.0:
+        raw_p = 1.0 if mean == 0.0 else 0.0
+    else:
+        t_statistic = mean / (std / math.sqrt(len(values)))
+        raw_p = _two_sided_t_pvalue(t_statistic, len(values) - 1)
+    if not math.isfinite(raw_p) or not 0.0 <= raw_p <= 1.0:
+        raise RuntimeError(f"Invalid paired t-test p-value: {raw_p}")
+    return mean, mean - half, mean + half, raw_p
+
+
+def holm_adjust(raw_p_by_key, alpha=0.05):
+    ordered = sorted(raw_p_by_key.items(), key=lambda item: (item[1], str(item[0])))
+    count = len(ordered)
+    adjusted, reject = {}, {}
+    running_adjusted = 0.0
+    still_rejecting = True
+    for rank, (key, raw_p) in enumerate(ordered):
+        multiplier = count - rank
+        running_adjusted = max(running_adjusted, min(1.0, multiplier * raw_p))
+        adjusted[key] = running_adjusted
+        if still_rejecting and raw_p <= alpha / multiplier:
+            reject[key] = True
+        else:
+            still_rejecting = False
+            reject[key] = False
+    return adjusted, reject
+
+
+def paired_summaries(effect_rows, manifest):
+    grouped = {}
+    for row in effect_rows:
+        key = (row["protocol"], int(row["shot"]))
+        grouped.setdefault(key, []).append(float(row["mean_difference"]))
+    raw = {key: _effect_summary(values) for key, values in grouped.items()}
+    output = []
+    for protocol, variants in manifest["protocol_variants"].items():
+        candidate = variants[1]
+        family = {
+            shot: raw[(protocol, shot)][3]
+            for shot in SHOTS
+        }
+        adjusted, reject = holm_adjust(family)
+        for shot in SHOTS:
+            values = grouped[(protocol, shot)]
+            mean, low, high, raw_p = raw[(protocol, shot)]
             output.append({
                 "protocol": protocol, "candidate": candidate, "shot": shot,
-                "train_seeds": 5, "mean_difference": f"{mean:.8f}",
-                "ci95_low": f"{mean - half:.8f}",
-                "ci95_high": f"{mean + half:.8f}",
-                "positive_train_seeds": sum(value > 0 for value in differences),
+                "train_seeds": len(values), "mean_difference": f"{mean:.8f}",
+                "ci95_low": f"{low:.8f}", "ci95_high": f"{high:.8f}",
+                "raw_p": f"{raw_p:.10f}",
+                "holm_adjusted_p": f"{adjusted[shot]:.10f}",
+                "holm_reject": str(reject[shot]),
+                "positive_train_seeds": sum(value > 0 for value in values),
             })
+    return output
+
+
+def primary_summaries(effect_rows, manifest):
+    by_protocol_seed = {}
+    for row in effect_rows:
+        key = (row["protocol"], int(row["train_seed"]))
+        by_protocol_seed.setdefault(key, []).append(float(row["mean_difference"]))
+    protocol_values = {
+        protocol: [
+            statistics.mean(by_protocol_seed[(protocol, train_seed)])
+            for train_seed in TRAIN_SEEDS
+        ]
+        for protocol in PROTOCOLS
+    }
+    raw = {
+        protocol: _effect_summary(values)
+        for protocol, values in protocol_values.items()
+    }
+    adjusted, reject = holm_adjust({
+        protocol: summary[3] for protocol, summary in raw.items()
+    })
+    output = []
+    for protocol in PROTOCOLS:
+        candidate = manifest["protocol_variants"][protocol][1]
+        values = protocol_values[protocol]
+        mean, low, high, raw_p = raw[protocol]
+        output.append({
+            "protocol": protocol,
+            "candidate": candidate,
+            "estimand": STATISTICAL_PLAN["primary_estimand"],
+            "train_seeds": len(values),
+            "mean_difference": f"{mean:.8f}",
+            "ci95_low": f"{low:.8f}",
+            "ci95_high": f"{high:.8f}",
+            "raw_p": f"{raw_p:.10f}",
+            "holm_adjusted_p": f"{adjusted[protocol]:.10f}",
+            "holm_reject": str(reject[protocol]),
+            "positive_train_seeds": sum(value > 0 for value in values),
+        })
     return output
 
 
@@ -342,24 +671,41 @@ def load_final_arrays(manifest, protocol):
     from utils.get_dataset import power_normalize_fn
 
     files = protocol_data_files(manifest, protocol)
-    support_x = np.load(files[("train", "X")])
-    support_y = np.load(files[("train", "Y")])
-    query_x = np.load(files[("test", "X")])
-    query_y = np.load(files[("test", "Y")])
+    support_x = np.load(files[("train", "X")], allow_pickle=False)
+    support_y = np.load(files[("train", "Y")], allow_pickle=False)
+    query_x = np.load(files[("test", "X")], allow_pickle=False)
+    query_y = np.load(files[("test", "Y")], allow_pickle=False)
     if support_x.ndim == 3 and support_x.shape[1] != 2:
         support_x = support_x.transpose((0, 2, 1))
     if query_x.ndim == 3 and query_x.shape[1] != 2:
         query_x = query_x.transpose((0, 2, 1))
     if support_x.shape[1:] != (2, 256) or query_x.shape[1:] != (2, 256):
         raise RuntimeError("Frozen final IQ shape is not (N, 2, 256)")
+    if support_y.ndim != 1 or query_y.ndim != 1:
+        raise RuntimeError("Frozen final labels must be one-dimensional")
+    if len(support_x) != len(support_y) or len(query_x) != len(query_y):
+        raise RuntimeError("Frozen final X/Y lengths differ")
+    for name, values in (
+        ("support IQ", support_x), ("query IQ", query_x),
+        ("support labels", support_y), ("query labels", query_y),
+    ):
+        if not np.issubdtype(values.dtype, np.number) or not np.isfinite(values).all():
+            raise RuntimeError(f"Frozen final {name} contains non-finite data")
+    for name, labels in (("support", support_y), ("query", query_y)):
+        if not np.equal(labels, np.floor(labels)).all():
+            raise RuntimeError(f"Frozen final {name} labels are not exact integers")
     expected = np.arange(NUM_CLASSES)
     if not np.array_equal(np.unique(support_y).astype(int), expected):
         raise RuntimeError("Final support labels are not exactly 0..29")
     if not np.array_equal(np.unique(query_y).astype(int), expected):
         raise RuntimeError("Final query labels are not exactly 0..29")
+    support_x = power_normalize_fn(support_x)
+    query_x = power_normalize_fn(query_x)
+    if not np.isfinite(support_x).all() or not np.isfinite(query_x).all():
+        raise RuntimeError("Power-normalized final IQ contains non-finite data")
     return (
-        power_normalize_fn(support_x), support_y.astype(np.uint8),
-        power_normalize_fn(query_x), query_y.astype(np.uint8),
+        support_x, support_y.astype(np.uint8),
+        query_x, query_y.astype(np.uint8),
     )
 
 
@@ -422,7 +768,9 @@ def run_protocol(protocol, manifest, output_dir, device, batch_size, lr_workers)
             for key in sorted(scores):
                 _, _, _, iteration = key
                 support_seed = SUPPORT_BASE_SEED + iteration - 1
-                accuracy = scores[key]
+                accuracy = validate_accuracy(
+                    scores[key], f"Computed accuracy for {protocol}/{key}"
+                )
                 rows.append({
                     "protocol": protocol, "role": "final", "variant": variant,
                     "train_seed": train_seed,
@@ -469,11 +817,48 @@ def run_all(manifest, output_dir, device, batch_size, lr_workers):
         )
         all_rows.extend(rows)
         print(f"COMPLETE_PROTOCOL={protocol} ROWS={len(rows)}")
+    effects = train_seed_effects(all_rows, manifest)
+    atomic_write_csv(
+        output_dir / "train_seed_effects.csv", TRAIN_SEED_EFFECT_FIELDS, effects,
+    )
     atomic_write_csv(
         output_dir / "paired_summary.csv", PAIRED_SUMMARY_FIELDS,
-        paired_summaries(all_rows, manifest),
+        paired_summaries(effects, manifest),
+    )
+    atomic_write_csv(
+        output_dir / "primary_summary.csv", PRIMARY_SUMMARY_FIELDS,
+        primary_summaries(effects, manifest),
     )
     return all_rows
+
+
+def build_result_evidence(output_dir):
+    relative_paths = [
+        "cross-rx/iterations.csv",
+        "cross-rx/model_summary.csv",
+        "cross-day/iterations.csv",
+        "cross-day/model_summary.csv",
+        "train_seed_effects.csv",
+        "paired_summary.csv",
+        "primary_summary.csv",
+    ]
+    files = []
+    for relative in relative_paths:
+        path = output_dir / relative
+        if not path.is_file():
+            raise FileNotFoundError(f"Expected final result is missing: {path}")
+        files.append({
+            "path": relative,
+            "size_bytes": path.stat().st_size,
+            "sha256": sha256(path),
+        })
+    evidence = {
+        "schema": "wisig-final-result-evidence-v2",
+        "files": files,
+    }
+    evidence_path = output_dir / "RESULT_EVIDENCE.json"
+    atomic_write_json(evidence_path, evidence)
+    return evidence_path, sha256(evidence_path), evidence
 
 
 def main():
@@ -487,39 +872,64 @@ def main():
             f"got {manifest_hash}"
         )
     audit_frozen_files(manifest, compute_hashes=True)
+    provenance = audit_training_provenance(manifest)
+    provenance_hash = canonical_hash(provenance)
     print(f"MODE={args.mode}")
     print(f"FROZEN_MANIFEST_SHA256={manifest_hash}")
     print("AUDITED_CHECKPOINTS=20/20")
+    print("AUDITED_TRAINING_CONFIGS=20/20")
+    print(f"TRAINING_PROVENANCE_SHA256={provenance_hash}")
     print("AUDITED_FINAL_FILES=8/8")
     print("EXPECTED_ROWS_CROSS_RX=5000")
     print("EXPECTED_ROWS_CROSS_DAY=5000")
     if args.mode == "audit":
         print("FINAL_ARRAYS_LOADED=False")
+        print(f"FROZEN_OUTPUT_DIR={FROZEN_OUTPUT_DIR}")
+        print(f"GLOBAL_UNSEAL_LOCK={GLOBAL_UNSEAL_LOCK}")
+        print(f"PRIMARY_ESTIMAND={STATISTICAL_PLAN['primary_estimand']}")
         print("READY_FOR_USER_AUTHORIZATION=True")
         print("WISIG_FINAL_MATRIX_AUDIT: PASS")
         return
     if args.confirm != CONFIRM_TOKEN:
         raise RuntimeError(f"Run mode requires --confirm {CONFIRM_TOKEN}")
-    output_dir = Path(args.output_dir).expanduser().resolve()
-    acquired = acquire_or_resume(output_dir, manifest, args.resume)
-    device = resolve_device(args.device)
+    output_dir = FROZEN_OUTPUT_DIR
+    completed_path = output_dir / "COMPLETED.json"
+    if args.resume and completed_path.is_file():
+        raise RuntimeError("Final matrix is already complete; resume is forbidden")
+    acquired = acquire_or_resume(
+        GLOBAL_UNSEAL_LOCK, manifest, FROZEN_RUNTIME, args.resume
+    )
+    device = resolve_device(FROZEN_RUNTIME["device"])
     print(f"UNSEAL_MANIFEST_SHA256={acquired}")
     print(f"RESUME={args.resume}")
     print(f"DEVICE={device}")
-    print(f"LR_WORKERS={args.lr_workers}")
+    print(f"BATCH_SIZE={FROZEN_RUNTIME['batch_size']}")
+    print(f"LR_WORKERS={FROZEN_RUNTIME['lr_workers']}")
+    print(f"OUTPUT_DIR={output_dir}")
+    print(f"GLOBAL_UNSEAL_LOCK={GLOBAL_UNSEAL_LOCK}")
     print("FINAL_ARRAYS_LOADED=ABOUT_TO_LOAD")
-    rows = run_all(manifest, output_dir, device, args.batch_size, args.lr_workers)
+    rows = run_all(
+        manifest, output_dir, device,
+        FROZEN_RUNTIME["batch_size"], FROZEN_RUNTIME["lr_workers"],
+    )
+    evidence_path, evidence_hash, evidence = build_result_evidence(output_dir)
     completion = {
         "manifest_sha256": acquired,
+        "runtime_contract": FROZEN_RUNTIME,
+        "statistical_plan": STATISTICAL_PLAN,
+        "training_provenance_sha256": provenance_hash,
         "rows": len(rows),
         "expected_rows": 10000,
+        "result_evidence": evidence,
+        "result_evidence_file": str(evidence_path),
+        "result_evidence_sha256": evidence_hash,
         "status": "complete",
         "final_test_accessed": True,
     }
-    (output_dir / "COMPLETED.json").write_text(
-        json.dumps(completion, indent=2), encoding="utf-8"
-    )
+    atomic_write_json(completed_path, completion)
     print(f"RESULT_DIR={output_dir}")
+    print(f"RESULT_EVIDENCE_SHA256={evidence_hash}")
+    print(f"COMPLETED_SHA256={sha256(completed_path)}")
     print("WISIG_FINAL_PAIRED_MATRIX: PASS")
 
 
