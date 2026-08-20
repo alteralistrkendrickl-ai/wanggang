@@ -225,6 +225,13 @@ def validate_training_config(config, protocol, variant, train_seed):
         "A1S": (True, False),
         "A1C": (True, True),
     }[variant]
+    a1_config = config.get("a1")
+    legacy_absent_b0 = variant == "B0" and a1_config is None
+    if not legacy_absent_b0 and not isinstance(a1_config, dict):
+        raise RuntimeError(
+            f"Training provenance mismatch for {protocol}/{variant}/seed{train_seed}/a1: "
+            "expected an explicit A1 configuration dictionary"
+        )
     checks = {
         "random_seed": (config.get("random_seed"), train_seed),
         "epoch": (config.get("epoch"), 10),
@@ -248,21 +255,23 @@ def validate_training_config(config, protocol, variant, train_seed):
             config.get("encoder", {}).get("TSLA_config", {}).get("patch_size"), 32
         ),
         "lfdb.enabled": (config.get("lfdb", {}).get("enabled"), False),
-        "a1.sampler_enabled": (
-            config.get("a1", {}).get("sampler_enabled"), expected_a1[0]
-        ),
-        "a1.loss_enabled": (
-            config.get("a1", {}).get("loss_enabled"), expected_a1[1]
-        ),
-        "a1.domain_key": (config.get("a1", {}).get("domain_key"), expected_domain),
     }
+    if not legacy_absent_b0:
+        checks.update({
+            "a1.sampler_enabled": (
+                a1_config.get("sampler_enabled"), expected_a1[0]
+            ),
+            "a1.loss_enabled": (a1_config.get("loss_enabled"), expected_a1[1]),
+            "a1.domain_key": (a1_config.get("domain_key"), expected_domain),
+        })
     if variant == "A1C":
         checks.update({
-            "a1.weight": (config.get("a1", {}).get("weight"), 0.1),
-            "a1.temperature": (config.get("a1", {}).get("temperature"), 0.1),
+            "a1.weight": (a1_config.get("weight"), 0.1),
+            "a1.temperature": (a1_config.get("temperature"), 0.1),
         })
     for label, (actual, expected) in checks.items():
         _require_equal(actual, expected, f"{protocol}/{variant}/seed{train_seed}/{label}")
+    return "legacy_absent_b0" if legacy_absent_b0 else "explicit"
 
 
 def audit_training_provenance(manifest):
@@ -289,13 +298,16 @@ def audit_training_provenance(manifest):
             raise RuntimeError(
                 f"Training checkpoint has no auditable config: {checkpoint_path}"
             )
-        validate_training_config(config, protocol, variant, train_seed)
+        a1_config_status = validate_training_config(
+            config, protocol, variant, train_seed
+        )
         evidence.append({
             "protocol": protocol,
             "variant": variant,
             "train_seed": train_seed,
             "training_checkpoint": str(checkpoint_path),
             "training_checkpoint_sha256": sha256(checkpoint_path),
+            "a1_config_status": a1_config_status,
         })
         del checkpoint
     return evidence

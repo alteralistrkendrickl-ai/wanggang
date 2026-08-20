@@ -139,10 +139,34 @@ class WiSigFinalMatrixEvaluateTest(unittest.TestCase):
                 "domain_key": "RX", "weight": 0.1, "temperature": 0.1,
             },
         }
-        final.validate_training_config(config, "cross-rx", "A1C", 2027)
+        self.assertEqual(
+            final.validate_training_config(config, "cross-rx", "A1C", 2027),
+            "explicit",
+        )
         config["augmentation"]["awgn_enable"] = True
         with self.assertRaisesRegex(RuntimeError, "awgn_enable"):
             final.validate_training_config(config, "cross-rx", "A1C", 2027)
+
+    def test_legacy_b0_without_a1_section_is_explicitly_audited(self):
+        config = {
+            "random_seed": 2024, "epoch": 10, "threshold": 0,
+            "dataset": {
+                "name": "wisig-cross-rx", "type": "iq", "normalize": "power",
+                "batch_size": 32, "signal_length": 256,
+            },
+            "augmentation": {"awgn_enable": False},
+            "encoder": {
+                "name": "CVTSLANet", "feature_dim": 1024,
+                "TSLA_config": {"seq_len": 256, "patch_size": 32},
+            },
+            "lfdb": {"enabled": False},
+        }
+        self.assertEqual(
+            final.validate_training_config(config, "cross-rx", "B0", 2024),
+            "legacy_absent_b0",
+        )
+        with self.assertRaisesRegex(RuntimeError, "explicit A1 configuration"):
+            final.validate_training_config(config, "cross-rx", "A1C", 2024)
 
     def test_frozen_primary_and_holm_statistics(self):
         self.assertAlmostEqual(
