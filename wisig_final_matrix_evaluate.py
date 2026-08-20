@@ -16,13 +16,14 @@ import statistics
 from pathlib import Path
 
 
-DRAFT_PATH = Path(
+DRAFT_PATH_TEXT = (
     "/home/yuanlong/yl/wanggang_wisig_a1_fair/runs/"
     "WiSig_final_matrix_v2_preparation/FROZEN_MANIFEST_DRAFT.json"
 )
+DRAFT_PATH = Path(DRAFT_PATH_TEXT)
 DRAFT_FILE_SHA256 = "542900a28a80ef20bdf07583f4a76932c5f36889dfd8d50ea3a571fa750c4c4f"
 DRAFT_CANONICAL_SHA256 = "f763179fb4fcdf6569bdbc3f620bd7c239a1520d8892572b9415f3889d89c5df"
-EXPECTED_FROZEN_MANIFEST_SHA256 = "38cf770fe266a00589949cc864e7384059d8611d735a757f137fc88e383c8c09"
+EXPECTED_FROZEN_MANIFEST_SHA256 = "5b6e1ea34f15bafe1ebdcf29f716ef15518c537d6b0503fd7963e25244c63471"
 CONFIRM_TOKEN = "UNSEAL-WISIG-FINAL-PAIRED-MATRIX-V2"
 PROTOCOLS = ("cross-rx", "cross-day")
 SHOTS = (1, 5, 10, 15, 20)
@@ -32,20 +33,22 @@ SUPPORT_BASE_SEED = 2024
 NUM_CLASSES = 30
 EXPECTED_ROWS_PER_PROTOCOL = 5000
 T_CRITICAL_DF4_95 = 2.7764451051977987
-FROZEN_OUTPUT_DIR = Path(
+FROZEN_OUTPUT_DIR_TEXT = (
     "/home/yuanlong/yl/wanggang_wisig_final_readiness/runs/"
     "WiSig_final_paired_matrix_v2"
 )
-GLOBAL_UNSEAL_LOCK = Path(
+FROZEN_OUTPUT_DIR = Path(FROZEN_OUTPUT_DIR_TEXT)
+GLOBAL_UNSEAL_LOCK_TEXT = (
     "/home/yuanlong/yl/wanggang_wisig_final_readiness/runs/"
     "WiSig_final_paired_matrix_v2_UNSEAL_MANIFEST.json"
 )
+GLOBAL_UNSEAL_LOCK = Path(GLOBAL_UNSEAL_LOCK_TEXT)
 FROZEN_RUNTIME = {
     "device": "cuda",
     "batch_size": 256,
     "lr_workers": 3,
-    "output_dir": str(FROZEN_OUTPUT_DIR),
-    "global_unseal_lock": str(GLOBAL_UNSEAL_LOCK),
+    "output_dir": FROZEN_OUTPUT_DIR_TEXT,
+    "global_unseal_lock": GLOBAL_UNSEAL_LOCK_TEXT,
     "protocol_order": list(PROTOCOLS),
 }
 STATISTICAL_PLAN = {
@@ -129,7 +132,7 @@ def load_and_freeze_draft(path=DRAFT_PATH, verify_file=True):
     manifest["schema"] = "wisig-final-paired-matrix-v2"
     manifest["run_enabled"] = True
     manifest["source_draft"] = {
-        "path": str(DRAFT_PATH),
+        "path": DRAFT_PATH_TEXT,
         "file_sha256": DRAFT_FILE_SHA256,
         "canonical_sha256": DRAFT_CANONICAL_SHA256,
     }

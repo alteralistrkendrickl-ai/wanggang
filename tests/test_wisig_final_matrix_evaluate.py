@@ -46,6 +46,15 @@ class WiSigFinalMatrixEvaluateTest(unittest.TestCase):
         self.assertEqual(len(final.expected_row_keys("cross-rx", manifest)), 5000)
         self.assertEqual(len(final.expected_row_keys("cross-day", manifest)), 5000)
 
+    def test_frozen_manifest_paths_are_platform_independent_posix_text(self):
+        paths = (
+            final.DRAFT_PATH_TEXT,
+            final.FROZEN_RUNTIME["output_dir"],
+            final.FROZEN_RUNTIME["global_unseal_lock"],
+        )
+        self.assertTrue(all(path.startswith("/home/") for path in paths))
+        self.assertTrue(all("\\" not in path for path in paths))
+
     def test_exclusive_unseal_and_exact_resume(self):
         manifest = self.synthetic_manifest()
         digest = final.canonical_hash(manifest)
