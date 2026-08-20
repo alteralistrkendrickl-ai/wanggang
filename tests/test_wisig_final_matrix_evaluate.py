@@ -147,6 +147,23 @@ class WiSigFinalMatrixEvaluateTest(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, "awgn_enable"):
             final.validate_training_config(config, "cross-rx", "A1C", 2027)
 
+    def test_training_provenance_hash_is_code_frozen(self):
+        provenance = [{"protocol": "cross-rx", "variant": "B0"}]
+        old = final.EXPECTED_TRAINING_PROVENANCE_SHA256
+        final.EXPECTED_TRAINING_PROVENANCE_SHA256 = final.canonical_hash(provenance)
+        try:
+            self.assertEqual(
+                final.validate_training_provenance_hash(provenance),
+                final.EXPECTED_TRAINING_PROVENANCE_SHA256,
+            )
+            changed = [{"protocol": "cross-rx", "variant": "A1C"}]
+            with self.assertRaisesRegex(
+                RuntimeError, "Code-frozen training provenance mismatch"
+            ):
+                final.validate_training_provenance_hash(changed)
+        finally:
+            final.EXPECTED_TRAINING_PROVENANCE_SHA256 = old
+
     def test_legacy_b0_without_a1_section_is_explicitly_audited(self):
         config = {
             "random_seed": 2024, "epoch": 10, "threshold": 0,

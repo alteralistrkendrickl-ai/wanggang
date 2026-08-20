@@ -24,6 +24,9 @@ DRAFT_PATH = Path(DRAFT_PATH_TEXT)
 DRAFT_FILE_SHA256 = "542900a28a80ef20bdf07583f4a76932c5f36889dfd8d50ea3a571fa750c4c4f"
 DRAFT_CANONICAL_SHA256 = "f763179fb4fcdf6569bdbc3f620bd7c239a1520d8892572b9415f3889d89c5df"
 EXPECTED_FROZEN_MANIFEST_SHA256 = "5b6e1ea34f15bafe1ebdcf29f716ef15518c537d6b0503fd7963e25244c63471"
+EXPECTED_TRAINING_PROVENANCE_SHA256 = (
+    "ae177a24e8a2eee02d17c1a485304839143781d87870c1284ff1ecee120605cd"
+)
 CONFIRM_TOKEN = "UNSEAL-WISIG-FINAL-PAIRED-MATRIX-V2"
 PROTOCOLS = ("cross-rx", "cross-day")
 SHOTS = (1, 5, 10, 15, 20)
@@ -103,6 +106,16 @@ def sha256(path):
 def canonical_hash(payload):
     encoded = json.dumps(payload, sort_keys=True, separators=(",", ":"))
     return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
+
+
+def validate_training_provenance_hash(provenance):
+    actual = canonical_hash(provenance)
+    if actual != EXPECTED_TRAINING_PROVENANCE_SHA256:
+        raise RuntimeError(
+            "Code-frozen training provenance mismatch: expected "
+            f"{EXPECTED_TRAINING_PROVENANCE_SHA256}, got {actual}"
+        )
+    return actual
 
 
 def load_and_freeze_draft(path=DRAFT_PATH, verify_file=True):
@@ -888,7 +901,7 @@ def main():
         )
     audit_frozen_files(manifest, compute_hashes=True)
     provenance = audit_training_provenance(manifest)
-    provenance_hash = canonical_hash(provenance)
+    provenance_hash = validate_training_provenance_hash(provenance)
     print(f"MODE={args.mode}")
     print(f"FROZEN_MANIFEST_SHA256={manifest_hash}")
     print("AUDITED_CHECKPOINTS=20/20")
